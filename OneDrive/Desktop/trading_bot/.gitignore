@@ -1,0 +1,95 @@
+# Trading Bot .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+pyvenv.cfg
+Scripts/
+Include/
+Lib/
+share/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+gui.log
+
+# Database files
+*.db
+*.sqlite
+trading_data.db
+trade_history.db
+
+# Data files (keep source code, ignore actual data)
+/data/
+performance_data.json
+*.sqlite3
+
+# Configuration files with sensitive data
+config.json
+.env
+*.key
+
+# API Keys (keeping template versions)
+!config.template.json
+
+# Cache
+.cache/
+*.cache
+
+# Temporary files
+*.tmp
+temp/
+.temp/
+
+# Trading data
+trades_export_*.csv
+performance_data/
+historical_data/
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+.coverage
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json

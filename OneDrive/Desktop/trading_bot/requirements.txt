@@ -1,0 +1,64 @@
+# Core web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+websockets==12.0
+
+# Database and caching
+sqlalchemy==2.0.23
+alembic==1.12.1
+psycopg2-binary==2.9.9
+redis==5.0.1
+timescaledb==0.0.4
+
+# Exchange APIs and WebSocket
+ccxt==4.1.48
+python-binance==1.0.19
+coinbase-pro==1.1.4
+websocket-client==1.6.4
+
+# Social media APIs
+tweepy==4.15.0
+praw==7.7.1
+telethon==1.33.1
+
+# ML and Data Science
+scikit-learn==1.3.2
+xgboost==2.0.1
+lightgbm==4.1.0
+transformers==4.35.2
+torch==2.1.1
+tokenizers==0.15.0
+pandas==2.1.3
+numpy==1.25.2
+scipy==1.11.4
+
+# Technical Analysis
+ta==0.10.2
+pandas-ta==0.3.14b0
+
+# On-chain data
+web3==6.12.0
+solders==0.21.0
+solana==0.34.0
+
+# News and sentiment
+feedparser==6.0.10
+newspaper3k==0.2.8
+beautifulsoup4==4.12.2
+requests==2.31.0
+
+# Monitoring and observability
+prometheus-client==0.19.0
+structlog==23.2.0
+
+# Async and utilities
+asyncio==3.4.3
+aioredis==2.0.1
+httpx==0.25.2
+pydantic==2.5.0
+python-dotenv==1.0.0
+schedule==1.2.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
