@@ -1,6 +1,6 @@
 """
-Integrated High Volatility Low Cap Trading Bot
-Combines adaptive scaling, UUID tracking, ML pipeline, and low cap strategy
+Enhanced Integrated High Volatility Low Cap Trading Bot
+Combines adaptive scaling, UUID tracking, ML pipeline, low cap strategy, and social sentiment analysis
 """
 
 import asyncio
@@ -18,6 +18,7 @@ from src.ml.feature_engineering import FeatureEngineer
 from src.ml.safe_training_pipeline import SafeMLPipeline, ModelConfig
 from src.risk.adaptive_scaling import AdaptiveProfitScaling
 from src.data.unified_market_provider import UnifiedMarketDataProvider
+from src.data.social_sentiment import EnhancedSocialSentimentCollector
 
 # Configure logging
 logging.basicConfig(
@@ -27,14 +28,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class IntegratedTradingBot:
-    """Integrated trading bot with UUID tracking and ML pipeline"""
+    """Enhanced integrated trading bot with UUID tracking, ML pipeline, and social sentiment analysis"""
     
     def __init__(self,
-                 small_fund_usd: float = 1000.0,
-                 total_fund_usd: float = 10000.0,
+                 small_fund_usd: float = 125.0,  # Optimized for small capital
+                 total_fund_usd: float = 125.0,   # Start small, grow systematically
                  coinmarketcap_api_key: str = None,
                  coingecko_api_key: str = None,
-                 dappradar_api_key: str = None):
+                 dappradar_api_key: str = None,
+                 twitter_api_key: str = "Sj8ivlnfFe5feHLyLKysOJLyI",
+                 twitter_api_secret: str = "vTfAWSayK2jkMt40kyczU0QgZE8Z7qEx5GQFjFPQpQgyZgj31y"):
         
         self.small_fund_usd = small_fund_usd
         self.total_fund_usd = total_fund_usd
@@ -43,6 +46,13 @@ class IntegratedTradingBot:
         self.trade_tracker = TradeTrackingSystem(
             db_path="integrated_trades.db",
             artifacts_dir="integrated_artifacts"
+        )
+        
+        # Initialize enhanced social sentiment collector with professional APIs
+        logger.info("🐦 Initializing enhanced social sentiment collector with professional APIs...")
+        self.sentiment_collector = EnhancedSocialSentimentCollector(
+            twitter_api_key=twitter_api_key,
+            twitter_api_secret=twitter_api_secret
         )
         
         # Initialize strategies
@@ -304,9 +314,9 @@ class IntegratedTradingBot:
         if current_pnl_pct <= -position['stop_loss_pct']:
             return True, TerminationReason.STOP_LOSS.value
         
-        # Time limit (48 hours for low cap trades)
+        # Time limit (12 hours for quick microcap testing)
         time_in_position = datetime.now(timezone.utc) - position['entry_time']
-        if time_in_position.total_seconds() > 48 * 3600:
+        if time_in_position.total_seconds() > 12 * 3600:
             return True, TerminationReason.TIME_LIMIT.value
         
         # Rugpull detection (simplified)
@@ -534,10 +544,10 @@ class IntegratedTradingBot:
 async def main():
     """Main entry point"""
     
-    # Configuration
+    # Configuration optimized for small capital
     config = {
-        'small_fund_usd': 1000.0,
-        'total_fund_usd': 10000.0,
+        'small_fund_usd': 125.0,        # Your starting capital
+        'total_fund_usd': 125.0,        # Start small, grow systematically
         'coinmarketcap_api_key': '6cad35f36d7b4e069b8dcb0eb9d17d56',
         'coingecko_api_key': 'CG-uKph8trS6RiycsxwVQtxfxvF',
         'dappradar_api_key': 'xD9Fvb0Nb285BLRPfKLgL44ULe6nR8Fm90i894xA'
