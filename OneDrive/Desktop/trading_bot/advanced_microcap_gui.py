@@ -356,8 +356,33 @@ class AdvancedTradingGUI:
     def setup_gui(self):
         """Setup the advanced GUI with risk controls"""
         
-        # Main container
-        main_frame = ttk.Frame(self.root)
+        # Create scrollable canvas
+        self.canvas = tk.Canvas(self.root, bg='#1e1e1e')
+        self.scrollbar_v = ttk.Scrollbar(self.root, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.scrollbar_h = ttk.Scrollbar(self.root, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        self.scrollable_frame = ttk.Frame(self.canvas)
+        
+        # Configure scrolling
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        
+        # Create window in canvas
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar_v.set, xscrollcommand=self.scrollbar_h.set)
+        
+        # Pack scrollable components
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0), pady=10)
+        self.scrollbar_v.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
+        self.scrollbar_h.pack(side=tk.BOTTOM, fill=tk.X, padx=10)
+        
+        # Bind mouse wheel scrolling
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.root.bind("<MouseWheel>", self._on_mousewheel)
+        
+        # Main container (now inside scrollable frame)
+        main_frame = ttk.Frame(self.scrollable_frame)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Top section - Risk Profile Controls
@@ -368,6 +393,10 @@ class AdvancedTradingGUI:
         
         # Bottom section - Market Data and Trading Log
         self.setup_market_and_log_section(main_frame)
+    
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel scrolling"""
+        self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
     
     def setup_risk_controls(self, parent):
         """Setup risk profile and control section"""
@@ -507,11 +536,31 @@ class AdvancedTradingGUI:
         
         # Positions treeview
         pos_columns = ('Symbol', 'Side', 'Size', 'Entry', 'Current', 'P&L', 'Risk', 'Action')
-        self.positions_tree = ttk.Treeview(positions_frame, columns=pos_columns, show='headings')
+        self.positions_tree = ttk.Treeview(positions_frame, columns=pos_columns, show='headings', height=8)
+        
+        # Configure columns with better widths and alignment
+        column_configs = {
+            'Symbol': {'width': 80, 'anchor': 'center'},
+            'Side': {'width': 60, 'anchor': 'center'},
+            'Size': {'width': 80, 'anchor': 'e'},
+            'Entry': {'width': 100, 'anchor': 'e'},
+            'Current': {'width': 100, 'anchor': 'e'},
+            'P&L': {'width': 80, 'anchor': 'center'},
+            'Risk': {'width': 90, 'anchor': 'center'},
+            'Action': {'width': 80, 'anchor': 'center'}
+        }
         
         for col in pos_columns:
             self.positions_tree.heading(col, text=col)
-            self.positions_tree.column(col, width=80)
+            self.positions_tree.column(col, 
+                width=column_configs[col]['width'],
+                anchor=column_configs[col]['anchor'],
+                minwidth=50)
+        
+        # Enable text selection and better formatting
+        self.positions_tree.tag_configure('profit', foreground='green')
+        self.positions_tree.tag_configure('loss', foreground='red')
+        self.positions_tree.tag_configure('neutral', foreground='gray')
         
         # Scrollbar for positions
         positions_scrollbar = ttk.Scrollbar(positions_frame, orient=tk.VERTICAL, command=self.positions_tree.yview)
@@ -1679,7 +1728,7 @@ class AdvancedTradingGUI:
             self.candidates_tree.insert('', 'end', values=values)
     
     def update_positions_tree(self):
-        """Update the positions treeview"""
+        """Update the positions treeview with enhanced formatting"""
         # Clear existing items
         for item in self.positions_tree.get_children():
             self.positions_tree.delete(item)
@@ -1689,28 +1738,32 @@ class AdvancedTradingGUI:
         for pos_id, position in self.active_positions.items():
             logger.info(f"   Position: {pos_id} - {position['symbol']} ${position['position_value']:.2f}")
         
-        # Add current positions
+        # Add current positions with improved formatting
         for position in self.active_positions.values():
             pnl_pct = (position['pnl'] / position['position_value']) * 100 if position['position_value'] > 0 else 0
             
-            values = (
-                position['symbol'],
-                position['side'].upper(),
-                f"${position['position_value']:.0f}",
-                f"${position['entry_price']:.4f}",
-                f"${position['current_price']:.4f}",
-                f"{pnl_pct:+.1f}%",
-                position['risk_profile'],
-                "Monitor"
-            )
+            # Format values with proper precision
+            symbol = position['symbol'][:8]  # Limit symbol length
+            side = position['side'].upper()
+            size = f"${position['position_value']:.2f}"
+            entry = f"${position['entry_price']:.6f}" if position['entry_price'] < 1 else f"${position['entry_price']:.4f}"
+            current = f"${position['current_price']:.6f}" if position['current_price'] < 1 else f"${position['current_price']:.4f}"
+            risk = position['risk_profile'][:8]  # Limit risk profile length
             
-            item = self.positions_tree.insert('', 'end', values=values)
+            values = (symbol, side, size, entry, current, f"{pnl_pct:+.1f}%", risk, "Monitor")
             
-            # Color code based on P&L
+            # Determine color tag based on P&L
             if pnl_pct > 0:
-                self.positions_tree.set(item, 'P&L', f"+{pnl_pct:.1f}%")
+                tag = 'profit'
             elif pnl_pct < 0:
-                self.positions_tree.set(item, 'P&L', f"{pnl_pct:.1f}%")
+                tag = 'loss'
+            else:
+                tag = 'neutral'
+            
+            item = self.positions_tree.insert('', 'end', values=values, tags=(tag,))
+            
+            # Additional debugging for display
+            logger.debug(f"   Added to tree: {symbol} | {side} | {size} | {entry} | {current} | {pnl_pct:+.1f}% | {risk}")
     
     def update_allocation_display(self):
         """Update the allocation text display"""
