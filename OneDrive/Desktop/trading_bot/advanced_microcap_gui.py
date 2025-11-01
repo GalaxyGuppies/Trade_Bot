@@ -356,10 +356,14 @@ class AdvancedTradingGUI:
     def setup_gui(self):
         """Setup the advanced GUI with risk controls"""
         
-        # Create scrollable canvas
-        self.canvas = tk.Canvas(self.root, bg='#1e1e1e')
-        self.scrollbar_v = ttk.Scrollbar(self.root, orient=tk.VERTICAL, command=self.canvas.yview)
-        self.scrollbar_h = ttk.Scrollbar(self.root, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        # Create main container for proper layout
+        main_container = ttk.Frame(self.root)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Create scrollable canvas with proper positioning
+        self.canvas = tk.Canvas(main_container, bg='#1e1e1e')
+        self.scrollbar_v = ttk.Scrollbar(main_container, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.scrollbar_h = ttk.Scrollbar(main_container, orient=tk.HORIZONTAL, command=self.canvas.xview)
         self.scrollable_frame = ttk.Frame(self.canvas)
         
         # Configure scrolling
@@ -368,20 +372,23 @@ class AdvancedTradingGUI:
             lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         )
         
-        # Create window in canvas
-        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        # Create window in canvas - center it properly
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar_v.set, xscrollcommand=self.scrollbar_h.set)
         
-        # Pack scrollable components
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0), pady=10)
-        self.scrollbar_v.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
-        self.scrollbar_h.pack(side=tk.BOTTOM, fill=tk.X, padx=10)
+        # Bind canvas resize to center content
+        self.canvas.bind('<Configure>', self._on_canvas_configure)
+        
+        # Pack scrollable components in correct order
+        self.scrollbar_h.pack(side=tk.BOTTOM, fill=tk.X)
+        self.scrollbar_v.pack(side=tk.RIGHT, fill=tk.Y) 
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # Bind mouse wheel scrolling
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
         self.root.bind("<MouseWheel>", self._on_mousewheel)
         
-        # Main container (now inside scrollable frame)
+        # Main content frame (now inside scrollable frame)
         main_frame = ttk.Frame(self.scrollable_frame)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
@@ -397,6 +404,24 @@ class AdvancedTradingGUI:
     def _on_mousewheel(self, event):
         """Handle mouse wheel scrolling"""
         self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+    
+    def _on_canvas_configure(self, event):
+        """Handle canvas resize events to center content"""
+        # Update the canvas window to center the content
+        canvas_width = event.width
+        canvas_height = event.height
+        
+        # Get the required size of the content
+        self.canvas.update_idletasks()
+        content_width = self.scrollable_frame.winfo_reqwidth()
+        content_height = self.scrollable_frame.winfo_reqheight()
+        
+        # Center the content if it's smaller than the canvas
+        x_offset = max(0, (canvas_width - content_width) // 2)
+        y_offset = max(0, (canvas_height - content_height) // 2)
+        
+        # Update the canvas window position
+        self.canvas.coords(self.canvas_window, x_offset, y_offset)
     
     def setup_risk_controls(self, parent):
         """Setup risk profile and control section"""
@@ -1546,13 +1571,17 @@ class AdvancedTradingGUI:
     def update_gui_elements(self):
         """Update GUI elements with current data"""
         try:
-            # Update portfolio metrics
-            self.total_value_label.configure(text=f"Total Value: ${self.total_portfolio_value:,.2f}")
-            self.available_capital_label.configure(text=f"Available: ${self.available_capital:,.2f}")
-            self.daily_pnl_label.configure(text=f"Daily P&L: ${self.daily_pnl:+,.2f}")
+            # Update portfolio metrics using hasattr checks for safety
+            if hasattr(self, 'total_value_label'):
+                self.total_value_label.configure(text=f"Total Value: ${self.total_portfolio_value:,.2f}")
+            if hasattr(self, 'available_capital_label'):
+                self.available_capital_label.configure(text=f"Available: ${self.available_capital:,.2f}")
+            if hasattr(self, 'daily_pnl_label'):
+                self.daily_pnl_label.configure(text=f"Daily P&L: ${self.daily_pnl:+,.2f}")
             
-            current_risk = (self.total_portfolio_value - self.available_capital) / self.total_portfolio_value * 100
-            self.risk_utilization_label.configure(text=f"Risk Utilization: {current_risk:.1f}%")
+            if hasattr(self, 'risk_utilization_label'):
+                current_risk = (self.total_portfolio_value - self.available_capital) / self.total_portfolio_value * 100
+                self.risk_utilization_label.configure(text=f"Risk Utilization: {current_risk:.1f}%")
             
             # Update candidates tree
             self.update_candidates_tree()
