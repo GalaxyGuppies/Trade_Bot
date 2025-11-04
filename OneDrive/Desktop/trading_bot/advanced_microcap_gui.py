@@ -7,13 +7,24 @@ from tkinter import ttk, messagebox
 import threading
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
 import sqlite3
 import os
 import asyncio
 from dataclasses import dataclass
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Add pandas for ML data analysis
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
 
 # Import wallet balance detector, blockchain analysis, and gas management
 import sys
@@ -23,10 +34,33 @@ from src.data.enhanced_blockchain_analyzer import EnhancedBlockchainAnalyzer
 from src.data.alternative_blockchain_analyzer import AlternativeBlockchainAnalyzer
 from practical_token_verifier import PracticalTokenVerifier
 from gas_fee_manager import GasFeeManager
+from technical_analyzer import TechnicalAnalyzer, enhance_candidate_with_technical_analysis
+from src.strategies.duplex_strategy import DuplexTradingStrategy, TradeStrategy
+from src.strategies.profit_optimizer import ProfitOptimizer
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Import ML components for enhanced trading decisions (after logger setup)
+try:
+    from src.ai.ml_predictor import MLPredictor, PredictionTimeframe, ConfidenceLevel
+    from src.ml.feature_engineering import FeatureEngineer, FeatureConfig
+    from src.ml.safe_training_pipeline import SafeTrainingPipeline, ModelConfig
+    ML_AVAILABLE = True
+    logger.info("🧠 ML components imported successfully")
+except ImportError as e:
+    ML_AVAILABLE = False
+    logger.warning(f"⚠️ ML components not available: {e}")
+    
+    # Create dummy classes to prevent errors
+    class MLPredictor:
+        def __init__(self, *args, **kwargs): pass
+        def predict_token_performance(self, *args, **kwargs): return None
+    class FeatureEngineer:
+        def __init__(self, *args, **kwargs): pass
+    class SafeTrainingPipeline:
+        def __init__(self, *args, **kwargs): pass
 
 @dataclass
 class RiskProfile:
@@ -55,7 +89,7 @@ class AdvancedTradingGUI:
         
         # Initialize configuration
         self.config = self.load_config()
-        self.current_risk_profile = self.get_risk_profiles()['moderate']
+        self.current_risk_profile = self.get_risk_profiles()['scalp_quick']
         
         # Initialize wallet balance detector
         wallet_config = self.config.get('wallet', {})
@@ -78,6 +112,12 @@ class AdvancedTradingGUI:
         # Initialize database
         self.init_database()
         
+        # Initialize active positions dictionary before loading from database
+        self.active_positions = {}
+        
+        # Load any existing active positions from previous session
+        self.load_active_positions()
+        
         # Initialize enhanced blockchain analyzer with Moralis
         moralis_api_key = self.config.get('api_keys', {}).get('moralis')
         if moralis_api_key:
@@ -98,21 +138,72 @@ class AdvancedTradingGUI:
         # Initialize hybrid discovery system
         self.manual_tokens = []  # User-added tokens
         self.watchlist_tokens = []  # Tokens being tracked
-        self.discovery_mode = 'hybrid'  # hybrid, real_only, mock_only
+        self.discovery_mode = 'scalping'  # scalping, hybrid, real_only, mock_only
         logger.info("🔄 Hybrid token discovery system initialized")
         
         # Initialize gas fee manager
         self.gas_manager = GasFeeManager()
+        self.technical_analyzer = TechnicalAnalyzer()
         logger.info("⛽ Gas fee manager initialized")
+        
+        # Initialize duplex trading strategy
+        self.duplex_strategy = DuplexTradingStrategy(self.config)
+        logger.info("🔄 Duplex trading strategy initialized")
+        
+        # Initialize profit optimizer
+        self.profit_optimizer = ProfitOptimizer(self.config)
+        logger.info("🎯 Profit optimizer initialized")
+        
+        # Initialize ML components for enhanced trading decisions
+        self.ml_available = ML_AVAILABLE
+        if ML_AVAILABLE:
+            try:
+                # Initialize ML predictor with database path
+                self.ml_predictor = MLPredictor(db_path=self.db_path if hasattr(self, 'db_path') else 'data/microcap_trading.db')
+                
+                # Initialize feature engineer
+                feature_config = FeatureConfig(
+                    include_technical=True,
+                    include_sentiment=True,
+                    include_whale_activity=True,
+                    include_market_data=True
+                )
+                self.feature_engineer = FeatureEngineer(feature_config)
+                
+                # Initialize training pipeline
+                model_config = ModelConfig(
+                    model_type="lightgbm",
+                    target_column="realized_pnl_percent",
+                    min_samples=10,  # Start with low threshold for new bots
+                    min_r2_score=0.05  # Lower threshold for initial training
+                )
+                self.training_pipeline = SafeTrainingPipeline(model_config)
+                
+                logger.info("🧠 ML components initialized successfully")
+                self.log_message("🤖 Machine Learning enabled - Enhanced predictions active")
+            except Exception as e:
+                logger.error(f"❌ ML initialization failed: {e}")
+                self.ml_available = False
+                self.ml_predictor = None
+                self.feature_engineer = None
+                self.training_pipeline = None
+        else:
+            self.ml_predictor = None
+            self.feature_engineer = None
+            self.training_pipeline = None
+            logger.info("ℹ️ ML components not available - using traditional analysis")
+            if hasattr(self, 'log_message'):
+                self.log_message("ℹ️ Traditional analysis mode - ML features disabled")
         
         # Market data and state
         self.market_data = {}
         self.microcap_candidates = []
-        self.active_positions = {}
         self.automation_enabled = False
+        self.headless_mode = False  # Flag to disable GUI operations
         
         # Risk management
         self.daily_pnl = 0.0
+        self.trade_cooldowns = {}  # Track recent losing trades to prevent immediate re-entry
         
         # Initialize capital with automatic wallet detection AND gas fee allocation
         self.total_portfolio_value = 50000.0  # Default fallback
@@ -132,6 +223,21 @@ class AdvancedTradingGUI:
             )
             self.raw_wallet_balance = float(initial_capital)
             self.total_portfolio_value = self.raw_wallet_balance
+        
+        # OVERRIDE: If config has significantly higher trading capital, use that instead
+        config_capital = self.config.get('trading', {}).get('available_capital', 0)
+        if config_capital > 0:  # Always use config capital if specified
+            logger.info(f"💰 Using config trading capital: ${config_capital:,.2f}")
+            self.raw_wallet_balance = config_capital
+            self.total_portfolio_value = config_capital
+            if hasattr(self, 'log_message'):
+                self.log_message(f"💰 Trading with config capital: ${config_capital:,.2f}")
+        elif config_capital > self.raw_wallet_balance * 2:  # Config is at least 2x higher
+            logger.info(f"💰 Using config trading capital (${config_capital:,.2f}) instead of detected balance (${self.raw_wallet_balance:,.2f})")
+            self.raw_wallet_balance = config_capital
+            self.total_portfolio_value = config_capital
+            if hasattr(self, 'log_message'):
+                self.log_message(f"💰 Trading with config capital: ${config_capital:,.2f}")
         
         # Calculate available capital after gas reserves
         self.update_available_capital()
@@ -178,30 +284,95 @@ class AdvancedTradingGUI:
                 min_confidence=0.5,          # Lower confidence required
                 max_portfolio_risk=20.0,     # 20% max portfolio risk
                 volatility_multiplier=1.5    # Increase size for volatility
+            ),
+            'scalp_quick': RiskProfile(
+                name="Scalp Quick",
+                position_size_base=25.0,      # 25% base position (increased for efficiency)
+                max_position_size=15.0,       # $15 max position (increased to beat gas costs)
+                stop_loss_pct=2.0,           # 2.0% stop loss (loosened to reduce false exits)
+                take_profit_pct=4.0,         # 4% take profit (increased for better R:R)
+                max_daily_trades=50,         # High frequency trading
+                rugpull_threshold=0.15,      # Higher threshold for major coins
+                min_confidence=0.3,          # Lower confidence for quick trades
+                max_portfolio_risk=80.0,     # 80% max portfolio risk (aggressive for small capital)
+                volatility_multiplier=1.5    # Moderate sizing for volatility
+            ),
+            'scalp_swing': RiskProfile(
+                name="Scalp Swing",
+                position_size_base=45.0,      # 45% base position for larger swings (increased)
+                max_position_size=35.0,       # $35 max position (increased for efficiency)
+                stop_loss_pct=3.0,           # 3.0% stop loss (loosened for swing trades)
+                take_profit_pct=8.0,         # 8% take profit (increased for better swings)
+                max_daily_trades=20,         # Moderate frequency
+                rugpull_threshold=0.15,      # Higher threshold for major coins
+                min_confidence=0.4,          # Moderate confidence for larger positions
+                max_portfolio_risk=85.0,     # 85% max portfolio risk
+                volatility_multiplier=1.3    # Moderate sizing for volatility
             )
         }
     
     def load_config(self) -> Dict:
-        """Load configuration from file or create default"""
+        """Load configuration from environment variables and file"""
+        # Load from .env file first, then fall back to config.json
+        config = {}
+        
+        # Try to load from config.json for non-sensitive data
         try:
             with open('config.json', 'r') as f:
-                return json.load(f)
+                config = json.load(f)
         except FileNotFoundError:
-            return {
-                'initial_capital': 50000.0,  # Changed from 10000.0 to 50000.0
-                'api_keys': {
-                    'coinmarketcap': '6cad35f36d7b4e069b8dcb0eb9d17d56',
-                    'coingecko': 'CG-uKph8trS6RiycsxwVQtxfxvF',
-                    'dappradar': 'xD9Fvb0Nb285BLRPfKLgL44ULe6nR8Fm90i894xA',
-                    'worldnews': '46af273710a543ee8e821382082bb08e'
-                },
+            config = {
+                'initial_capital': 50000.0,
                 'microcap_settings': {
-                    'min_market_cap': 100000,      # $100K min
-                    'max_market_cap': 50000000,    # $50M max
-                    'min_daily_volume': 50000,     # $50K min volume
-                    'scan_interval_minutes': 5     # Scan every 5 minutes
+                    'min_market_cap': 100000,
+                    'max_market_cap': 50000000,
+                    'min_daily_volume': 50000,
+                    'scan_interval_minutes': 1
                 }
             }
+        
+        # Override API keys with environment variables
+        config['api_keys'] = {
+            'coinmarketcap': os.getenv('COINMARKETCAP_API_KEY', '6cad35f36d7b4e069b8dcb0eb9d17d56'),
+            'coingecko': os.getenv('COINGECKO_API_KEY', 'CG-uKph8trS6RiycsxwVQtxfxvF'),
+            'dappradar': os.getenv('DAPPRADAR_API_KEY', 'xD9Fvb0Nb285BLRPfKLgL44ULe6nR8Fm90i894xA'),
+            'moralis': os.getenv('MORALIS_API_KEY', ''),
+            'birdeye': os.getenv('BIRDEYE_API_KEY', 'YOUR_BIRDEYE_API_KEY_HERE'),
+            'worldnews': os.getenv('WORLDNEWS_API_KEY', '46af273710a543ee8e821382082bb08e'),
+            'twitter': {
+                'bearer_token': os.getenv('TWITTER_BEARER_TOKEN', '')
+            },
+            'reddit': {
+                'client_id': os.getenv('REDDIT_CLIENT_ID', ''),
+                'client_secret': os.getenv('REDDIT_CLIENT_SECRET', ''),
+                'user_agent': os.getenv('REDDIT_USER_AGENT', 'TradingBot:v1.0.0 (by /u/yourusername)')
+            },
+            'telegram': {
+                'api_id': os.getenv('TELEGRAM_API_ID', ''),
+                'api_hash': os.getenv('TELEGRAM_API_HASH', '')
+            }
+        }
+        
+        # Override wallet and database configs with environment variables
+        config['wallet'] = config.get('wallet', {})
+        config['wallet']['address'] = os.getenv('WALLET_ADDRESS', config['wallet'].get('address', ''))
+        config['wallet']['solana_address'] = os.getenv('SOLANA_ADDRESS', config['wallet'].get('solana_address', ''))
+        
+        config['solana'] = {
+            'rpc_url': os.getenv('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
+            'websocket_url': os.getenv('SOLANA_WEBSOCKET_URL', ''),
+            'wallet_private_key': os.getenv('SOLANA_WALLET_PRIVATE_KEY', ''),
+            'wallet_address': os.getenv('SOLANA_WALLET_ADDRESS', '')
+        }
+        
+        config['database'] = {
+            'dbname': os.getenv('DB_NAME', 'trading_bot'),
+            'user': os.getenv('DB_USER', 'postgres'),
+            'password': os.getenv('DB_PASSWORD', 'your_password'),
+            'host': os.getenv('DB_HOST', 'localhost')
+        }
+        
+        return config
     
     def init_database(self):
         """Initialize local SQLite database"""
@@ -212,6 +383,7 @@ class AdvancedTradingGUI:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    position_id TEXT UNIQUE,
                     timestamp TEXT,
                     symbol TEXT,
                     side TEXT,
@@ -223,9 +395,45 @@ class AdvancedTradingGUI:
                     confidence REAL,
                     market_cap REAL,
                     rugpull_risk REAL,
-                    status TEXT
+                    status TEXT,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    position_size REAL,
+                    entry_time TEXT,
+                    discovery_mode TEXT
                 )
             ''')
+            
+            # Add new columns if they don't exist (for existing databases)
+            try:
+                conn.execute('ALTER TABLE trades ADD COLUMN position_id TEXT')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+                
+            try:
+                conn.execute('ALTER TABLE trades ADD COLUMN stop_loss REAL')
+            except sqlite3.OperationalError:
+                pass
+                
+            try:
+                conn.execute('ALTER TABLE trades ADD COLUMN take_profit REAL')
+            except sqlite3.OperationalError:
+                pass
+                
+            try:
+                conn.execute('ALTER TABLE trades ADD COLUMN position_size REAL')
+            except sqlite3.OperationalError:
+                pass
+                
+            try:
+                conn.execute('ALTER TABLE trades ADD COLUMN entry_time TEXT')
+            except sqlite3.OperationalError:
+                pass
+                
+            try:
+                conn.execute('ALTER TABLE trades ADD COLUMN discovery_mode TEXT')
+            except sqlite3.OperationalError:
+                pass
             
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS microcap_candidates (
@@ -239,6 +447,19 @@ class AdvancedTradingGUI:
                     rugpull_risk REAL,
                     confidence REAL,
                     status TEXT
+                )
+            ''')
+            
+            # Token performance tracking for optimization
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS token_performance (
+                    symbol TEXT PRIMARY KEY,
+                    total_trades INTEGER DEFAULT 0,
+                    winning_trades INTEGER DEFAULT 0,
+                    total_pnl REAL DEFAULT 0.0,
+                    avg_return REAL DEFAULT 0.0,
+                    last_updated TEXT,
+                    performance_score REAL DEFAULT 0.5
                 )
             ''')
     
@@ -264,11 +485,8 @@ class AdvancedTradingGUI:
                     # Calculate available capital after gas reserves
                     self.update_available_capital()
                     
-                    # Update GUI if it exists
-                    if hasattr(self, 'portfolio_value_var'):
-                        self.portfolio_value_var.set(f"${total_value:,.2f}")
-                    if hasattr(self, 'available_capital_var'):
-                        self.available_capital_var.set(f"${self.available_capital:,.2f}")
+                    # Update GUI display
+                    self.update_portfolio_display()
                     
                     logger.info(f"✅ Wallet balance detected: ${total_value:,.2f}")
                     logger.info(f"💰 Available for trading after gas reserves: ${self.available_capital:,.2f}")
@@ -325,9 +543,9 @@ class AdvancedTradingGUI:
             logger.info(f"   Reserved for Gas: ${gas_info['total_reserved_for_gas']:,.2f}")
             logger.info(f"   Available for Trading: ${self.available_capital:,.2f}")
             
-            # Update GUI if it exists
-            if hasattr(self, 'available_capital_var'):
-                self.available_capital_var.set(f"${self.available_capital:,.2f}")
+            # Update GUI display
+            if hasattr(self, 'update_portfolio_display'):
+                self.update_portfolio_display()
                 
         except Exception as e:
             logger.error(f"❌ Failed to update available capital: {e}")
@@ -440,13 +658,22 @@ class AdvancedTradingGUI:
         self.profile_buttons = {}
         profiles = self.get_risk_profiles()
         
+        # Color mapping for all profiles
+        profile_colors = {
+            'conservative': '#28a745', 
+            'moderate': '#ffc107', 
+            'aggressive': '#dc3545',
+            'scalp_quick': '#17a2b8',    # Cyan for quick scalping
+            'scalp_swing': '#6f42c1'     # Purple for swing scalping
+        }
+        
         for i, (key, profile) in enumerate(profiles.items()):
-            color = {'conservative': '#28a745', 'moderate': '#ffc107', 'aggressive': '#dc3545'}[key]
+            color = profile_colors.get(key, '#6c757d')  # Default gray for unknown profiles
             btn = tk.Button(profile_frame, text=profile.name, 
                            command=lambda k=key: self.set_risk_profile(k),
-                           bg=color, fg='white', font=('Arial', 10, 'bold'),
-                           padx=20, pady=5)
-            btn.pack(side=tk.LEFT, padx=(10, 0))
+                           bg=color, fg='white', font=('Arial', 9, 'bold'),
+                           padx=15, pady=4)
+            btn.pack(side=tk.LEFT, padx=(5, 0))
             self.profile_buttons[key] = btn
         
         # Automation toggle
@@ -610,10 +837,10 @@ class AdvancedTradingGUI:
         mode_frame.pack(side=tk.LEFT, padx=(10, 0))
         
         ttk.Label(mode_frame, text="Mode:", font=('Arial', 9)).pack(side=tk.LEFT)
-        self.discovery_mode_var = tk.StringVar(value="hybrid")
+        self.discovery_mode_var = tk.StringVar(value="scalping")
         mode_combo = ttk.Combobox(mode_frame, textvariable=self.discovery_mode_var, 
-                                 values=["hybrid", "real_only", "mock_only"], 
-                                 width=10, state="readonly")
+                                 values=["scalping", "hybrid", "real_only", "mock_only"], 
+                                 width=12, state="readonly")
         mode_combo.pack(side=tk.LEFT, padx=(5, 0))
         mode_combo.bind('<<ComboboxSelected>>', self.on_discovery_mode_change)
         
@@ -823,8 +1050,12 @@ class AdvancedTradingGUI:
                     if self.automation_enabled:
                         self.run_automation_cycle()
                     
-                    # Sleep for scan interval (default 5 minutes)
-                    scan_interval = self.config.get('microcap_settings', {}).get('scan_interval_minutes', 5)
+                    # Dynamic sleep interval based on discovery mode
+                    if self.discovery_mode == 'scalping':
+                        scan_interval = 0.5  # 30 seconds for scalping mode
+                    else:
+                        scan_interval = self.config.get('microcap_settings', {}).get('scan_interval_minutes', 5)
+                    
                     time.sleep(scan_interval * 60)
                     
                 except Exception as e:
@@ -838,9 +1069,15 @@ class AdvancedTradingGUI:
     def run_automation_cycle(self):
         """Run one automation cycle"""
         try:
-            # Update timestamp
+            # Update timestamp (if GUI is available)
             current_time = datetime.now().strftime("%H:%M:%S")
-            self.last_scan_label.configure(text=f"Last scan: {current_time}")
+            if hasattr(self, 'last_scan_label') and hasattr(self, 'root'):
+                try:
+                    self.last_scan_label.configure(text=f"Last scan: {current_time}")
+                except:
+                    pass  # Ignore GUI errors in auto mode
+            
+            logger.info(f"🔄 Starting automation cycle at {current_time}")
             
             # 1. Scan for new candidates (evaluation will happen automatically after discovery)
             self.scan_microcap_candidates()
@@ -848,8 +1085,12 @@ class AdvancedTradingGUI:
             # 2. Monitor existing positions
             self.monitor_positions()
             
-            # 3. Update GUI
-            self.root.after(0, self.update_gui_elements)
+            # 3. Update GUI (if available and in main thread)
+            if hasattr(self, 'root'):
+                try:
+                    self.root.after(0, self.update_gui_elements)
+                except:
+                    pass  # Ignore GUI errors in auto mode
             
         except Exception as e:
             logger.error(f"Automation cycle error: {e}")
@@ -970,8 +1211,10 @@ class AdvancedTradingGUI:
                 if market_cap < min_market_cap or market_cap > max_market_cap:
                     market_cap = int((min_market_cap + max_market_cap) / 2)  # Adjust to middle of range
             
-            # Skip if market cap is still out of range
-            if market_cap < min_market_cap or market_cap > max_market_cap:
+            # Skip market cap filtering for scalping targets (major coins are supposed to be large)
+            if token.get('discovery_source') == 'scalping':
+                logger.info(f"   ⚡ Scalping target: {token['symbol']} (${market_cap:,.0f} market cap)")
+            elif market_cap < min_market_cap or market_cap > max_market_cap:
                 logger.info(f"   Skipping {token['symbol']}: ${market_cap:,.0f} market cap (outside range)")
                 return None
             
@@ -987,16 +1230,20 @@ class AdvancedTradingGUI:
             logger.info(f"   📊 {token['symbol']} confidence: vol={volume_score:.2f}, liq={liquidity_score:.2f}, total={confidence:.2f}")
             
             # Calculate rugpull risk
-            rugpull_risk = 0.3  # Base risk
-            if token['liquidity_usd'] < 50000:
-                rugpull_risk += 0.2
-            if price_change > 100:
-                rugpull_risk += 0.2
-            if token.get('discovery_source') == 'manual':
-                rugpull_risk -= 0.1  # Manual tokens get slight benefit
-            elif token.get('discovery_source') == 'curated':
-                rugpull_risk -= 0.05  # Curated tokens get slight benefit
-            rugpull_risk = max(0.1, min(rugpull_risk, 1.0))
+            if token.get('discovery_source') == 'scalping':
+                # Scalping targets (major coins) have very low rugpull risk
+                rugpull_risk = 0.05  # Major coins are safe
+            else:
+                rugpull_risk = 0.3  # Base risk for other tokens
+                if token['liquidity_usd'] < 50000:
+                    rugpull_risk += 0.2
+                if price_change > 100:
+                    rugpull_risk += 0.2
+                if token.get('discovery_source') == 'manual':
+                    rugpull_risk -= 0.1  # Manual tokens get slight benefit
+                elif token.get('discovery_source') == 'curated':
+                    rugpull_risk -= 0.05  # Curated tokens get slight benefit
+                rugpull_risk = max(0.1, min(rugpull_risk, 1.0))
             
             logger.info(f"   🎯 {token['symbol']} rugpull risk: {rugpull_risk:.2f} (threshold: {self.current_risk_profile.rugpull_threshold:.2f})")
             
@@ -1039,6 +1286,18 @@ class AdvancedTradingGUI:
     
     def _use_emergency_fallback(self):
         """Emergency fallback when all discovery methods fail"""
+        # If we're in real_only mode and failing, switch to hybrid temporarily
+        if self.discovery_mode == 'real_only':
+            logger.warning("🔄 Switching from real_only to hybrid mode due to API failures")
+            self.discovery_mode = 'hybrid'
+            self.discovery_mode_var.set('hybrid')
+            # Try curated tokens instead of emergency data
+            curated_tokens = self._get_curated_microcaps(50000, 25000, 100000, 5000000)
+            if curated_tokens:
+                self.microcap_candidates = curated_tokens
+                self.log_message("📊 Using curated microcap tokens due to API failures")
+                return
+        
         emergency_tokens = [
             {
                 'symbol': 'EMERGENCY',
@@ -1077,8 +1336,29 @@ class AdvancedTradingGUI:
                         logger.info(f"🎯 Adding {len(self.manual_tokens)} manual tokens")
                         all_tokens.extend(self.manual_tokens)
                     
-                    # 2. Try real API discovery based on mode
-                    if self.discovery_mode in ['hybrid', 'real_only']:
+                    # 2. Handle scalping mode - focus on major coins  
+                    if self.discovery_mode == 'scalping':
+                        try:
+                            scalping_tokens = loop.run_until_complete(
+                                self.alternative_analyzer.search_scalping_targets(
+                                    min_volume=self.config['thresholds']['min_volume']  # Use config value
+                                )
+                            )
+                            logger.info(f"⚡ Scalping mode: found {len(scalping_tokens)} major coins")
+                            
+                            # Mark source for scalping tokens
+                            for token in scalping_tokens:
+                                token['discovery_source'] = 'scalping'
+                            all_tokens.extend(scalping_tokens)
+                            
+                        except Exception as scalping_error:
+                            logger.error(f"❌ Scalping discovery failed: {scalping_error}")
+                            # Fallback to emergency tokens if scalping fails
+                            self._use_emergency_fallback()
+                            return
+                    
+                    # 3. Try real API discovery for microcap modes
+                    elif self.discovery_mode in ['hybrid', 'real_only']:
                         try:
                             api_tokens = loop.run_until_complete(
                                 self.alternative_analyzer.search_trending_tokens(
@@ -1259,20 +1539,225 @@ class AdvancedTradingGUI:
             logger.info("❌ Automation disabled - skipping trade evaluation")
             return
             
+        # Wait briefly for discovery to complete if no candidates found
         if not self.microcap_candidates:
-            logger.info("❌ No candidates available - skipping trade evaluation")
+            logger.info("⏳ No candidates found, waiting for discovery to complete...")
+            import time
+            for i in range(15):  # Wait up to 15 seconds
+                time.sleep(1)
+                if self.microcap_candidates:
+                    logger.info(f"✅ Discovery completed! Found {len(self.microcap_candidates)} candidates")
+                    break
+                if i % 5 == 4:  # Log every 5 seconds
+                    logger.info(f"⏳ Still waiting for discovery... ({i+1}/15 seconds)")
+        
+        if not self.microcap_candidates:
+            logger.info("❌ No candidates available after waiting - skipping trade evaluation")
             return
         
         self.log_message(f"💰 Available capital: ${self.available_capital:.2f}")
         self.log_message(f"🎯 Evaluating {len(self.microcap_candidates)} candidates for trading...")
         
-        for i, candidate in enumerate(self.microcap_candidates):
+        # Sort candidates by ML confidence if available
+        evaluated_candidates = []
+        for candidate in self.microcap_candidates:
             try:
-                logger.info(f"🎯 Evaluating candidate {i+1}/{len(self.microcap_candidates)}: {candidate['symbol']}")
+                # Get ML prediction for enhanced evaluation
+                ml_prediction = self.get_ml_prediction(candidate)
+                candidate['ml_confidence'] = ml_prediction.get('confidence', 0.5)
+                candidate['ml_recommendation'] = ml_prediction.get('recommendation', 'HOLD')
+                candidate['ml_risk_score'] = ml_prediction.get('risk_score', 0.5)
+                
+                # Enhanced confidence score combining original + ML
+                original_confidence = candidate.get('confidence', 0.5)
+                ml_confidence = candidate['ml_confidence']
+                
+                # Weighted combination: 60% ML, 40% original metrics
+                candidate['enhanced_confidence'] = (ml_confidence * 0.6) + (original_confidence * 0.4)
+                
+                logger.info(f"🤖 ML Analysis for {candidate['symbol']}: "
+                          f"ML={ml_confidence:.2f}, Original={original_confidence:.2f}, "
+                          f"Enhanced={candidate['enhanced_confidence']:.2f}, Rec={candidate['ml_recommendation']}")
+                
+                evaluated_candidates.append(candidate)
+                
+            except Exception as e:
+                logger.error(f"ML evaluation error for {candidate['symbol']}: {e}")
+                # Fallback to original confidence
+                candidate['enhanced_confidence'] = candidate.get('confidence', 0.5)
+                candidate['ml_recommendation'] = 'HOLD'
+                evaluated_candidates.append(candidate)
+        
+        # Enhanced scalping logic for major coins
+        if self.discovery_mode == 'scalping':
+            # For scalping mode, prioritize price action over ML confidence
+            scalping_candidates = []
+            for candidate in evaluated_candidates:
+                # Enhance candidate with technical analysis
+                candidate = enhance_candidate_with_technical_analysis(candidate, self.technical_analyzer)
+                
+                # Get technical analysis data
+                technical = candidate.get('technical_analysis', {})
+                tech_rec = candidate.get('technical_recommendation', {})
+                
+                # Calculate scalping score based on technical indicators + price action
+                price_change = candidate.get('price_change_24h', 0)
+                volatility = candidate.get('volatility_score', 5.0)
+                symbol = candidate.get('symbol', '')
+                
+                # Technical indicator signals
+                rsi = technical.get('indicators', {}).get('rsi', 50)
+                bb_position = technical.get('indicators', {}).get('bollinger_bands', {}).get('position', 0.5)
+                macd_histogram = technical.get('indicators', {}).get('macd', {}).get('histogram', 0)
+                technical_score = technical.get('overall_score', 0)
+                technical_confidence = technical.get('confidence', 0.5)
+                
+                # Get historical performance for this token
+                performance_score = self.get_token_performance_score(symbol)
+                
+                # Enhanced scalping signals
+                is_dip = price_change < -2.0  # Down 2%+ = buy the dip
+                is_volatile = volatility >= 4.0  # High volatility = more opportunities
+                is_major_coin = candidate.get('discovery_source') == 'scalping'
+                
+                # Technical analysis signals
+                is_rsi_oversold = rsi < 35  # RSI oversold = good buy signal
+                is_bb_oversold = bb_position < 0.25  # Near lower Bollinger Band
+                is_macd_bullish = macd_histogram > 0  # MACD turning bullish
+                is_technically_bullish = technical_score > 0.2  # Overall technical bullish
+                is_good_performer = performance_score > 0.6  # Good historical performance
+                
+                # Score different signal types
+                signals = []
+                signal_score = 0
+                
+                if is_major_coin:
+                    if is_dip and (is_rsi_oversold or is_bb_oversold):
+                        signals.append('TECHNICAL_DIP')
+                        signal_score += 0.4  # Strong signal
+                    elif is_dip:
+                        signals.append('PRICE_DIP')
+                        signal_score += 0.2  # Moderate signal
+                    
+                    if is_rsi_oversold:
+                        signals.append('RSI_OVERSOLD')
+                        signal_score += 0.3
+                    
+                    if is_bb_oversold:
+                        signals.append('BB_OVERSOLD')
+                        signal_score += 0.2
+                    
+                    if is_macd_bullish and technical_score > 0:
+                        signals.append('MACD_BULLISH')
+                        signal_score += 0.25
+                    
+                    if is_volatile and is_technically_bullish:
+                        signals.append('VOLATILE_BULLISH')
+                        signal_score += 0.15
+                
+                if signals:  # Only add if we have actual signals
+                    # Boost confidence based on technical analysis
+                    technical_boost = technical_confidence * 0.3  # Up to 30% boost
+                    
+                    # Performance boost (good performers get priority)
+                    performance_boost = (performance_score - 0.5) * 0.4  # -0.2 to +0.2 boost
+                    
+                    total_boost = signal_score + technical_boost + performance_boost
+                    
+                    candidate['scalping_score'] = total_boost
+                    candidate['performance_score'] = performance_score
+                    candidate['technical_signals'] = signals
+                    candidate['enhanced_confidence'] = min(candidate['enhanced_confidence'] + total_boost, 1.0)
+                    scalping_candidates.append(candidate)
+                    
+                    # Enhanced logging with technical details
+                    signal_types = '/'.join(signals[:2])  # Show top 2 signal types
+                    perf_indicator = '⭐' if is_good_performer else '⚠️' if performance_score < 0.4 else ''
+                    tech_indicator = '📈' if is_technically_bullish else '📉' if technical_score < -0.2 else '➡️'
+                    
+                    self.log_message(f"⚡ Scalping signal: {symbol} {perf_indicator}{tech_indicator} "
+                                   f"({signal_types}) RSI:{rsi:.0f} BB:{bb_position:.2f} "
+                                   f"confidence: {candidate['enhanced_confidence']:.2f}")
+            
+            if scalping_candidates:
+                # Sort by technical strength + performance + scalping potential
+                scalping_candidates.sort(key=lambda x: (
+                    x.get('technical_confidence', 0.5) * 0.3 +    # 30% weight to technical confidence
+                    x.get('performance_score', 0.5) * 0.3 +       # 30% weight to historical performance  
+                    x.get('scalping_score', 0) * 0.4              # 40% weight to current signal strength
+                ), reverse=True)
+                viable_candidates = scalping_candidates[:5]  # Top 5 scalping opportunities
+            else:
+                # No scalping signals, use regular ML filtering
+                viable_candidates = [c for c in evaluated_candidates 
+                                   if c['enhanced_confidence'] >= self.current_risk_profile.min_confidence][:3]
+        else:
+            # Regular ML filtering for non-scalping modes
+            viable_candidates = [c for c in evaluated_candidates 
+                               if c['ml_recommendation'] in ['BUY', 'STRONG_BUY'] 
+                               and c['enhanced_confidence'] >= self.current_risk_profile.min_confidence]
+        
+        viable_candidates.sort(key=lambda x: x['enhanced_confidence'], reverse=True)
+        
+        if not viable_candidates:
+            self.log_message("❌ No ML-approved candidates meet confidence thresholds")
+            return
+        
+        self.log_message(f"🤖 ML filtered candidates: {len(viable_candidates)}/{len(self.microcap_candidates)} approved")
+        
+        # Debug: Log which candidates made it through
+        for idx, candidate in enumerate(viable_candidates[:3]):
+            logger.info(f"   Debug candidate {idx+1}: {candidate['symbol']} confidence={candidate['enhanced_confidence']:.2f}")
+        
+        for i, candidate in enumerate(viable_candidates[:3]):  # Evaluate top 3 ML-approved candidates
+            try:
+                self.log_message(f"🎯 Evaluating ML-approved candidate {i+1}/3: {candidate['symbol']}")
+                logger.info(f"   Starting evaluation for {candidate['symbol']} (confidence: {candidate['enhanced_confidence']:.2f})")
+                # Check if we already have a position in this symbol
+                symbol = candidate['symbol']
+                existing_positions = [pos for pos in self.active_positions.values() if pos.get('symbol') == symbol]
+                if existing_positions:
+                    logger.info(f"⚠️ Already holding {symbol} - skipping duplicate trade")
+                    continue
+                
+                logger.info(f"🎯 Evaluating ML-approved candidate {i+1}: {candidate['symbol']} "
+                          f"(Enhanced confidence: {candidate['enhanced_confidence']:.2f})")
+                
+                # Use duplex strategy to determine optimal approach
+                strategy_signal = self.evaluate_duplex_strategy(candidate)
+                
+                if strategy_signal.strategy == TradeStrategy.SKIP:
+                    logger.info(f"   🚫 Duplex strategy recommends SKIP: {strategy_signal.reasoning}")
+                    continue
+                
+                logger.info(f"   🎯 Duplex strategy selected: {strategy_signal.strategy.value.upper()}")
+                logger.info(f"   📊 Strategy confidence: {strategy_signal.confidence:.2f}")
+                logger.info(f"   💰 Strategy position size: ${strategy_signal.position_size:.2f}")
+                logger.info(f"   📈 Expected hold duration: {strategy_signal.hold_duration}")
+                logger.info(f"   🧠 Reasoning: {strategy_signal.reasoning}")
+                
+                position_size = strategy_signal.position_size
                 
                 # Check if we can afford the trade
-                position_size = self.calculate_position_size(candidate)
                 logger.info(f"   📊 Calculated position size: ${position_size:.2f}")
+                
+                # Check cooldown for this symbol (skip recent losing trades)
+                symbol = candidate['symbol']
+                if symbol in self.trade_cooldowns:
+                    cooldown_until = self.trade_cooldowns[symbol]
+                    if datetime.now() < cooldown_until:
+                        remaining_seconds = (cooldown_until - datetime.now()).total_seconds()
+                        logger.info(f"   🕒 {symbol} on cooldown for {remaining_seconds:.0f}s - skipping")
+                        continue
+                    else:
+                        # Cooldown expired, remove it
+                        del self.trade_cooldowns[symbol]
+                        logger.info(f"   ✅ {symbol} cooldown expired - ready to trade")
+                
+                # Skip if position size is too small (less than $1)
+                if position_size < 1.0:
+                    logger.info(f"   ❌ Position size too small: ${position_size:.2f} < $1.00")
+                    continue
                 
                 if position_size > self.available_capital:
                     self.log_message(f"❌ {candidate['symbol']}: Position too large (${position_size:.2f} > ${self.available_capital:.2f})")
@@ -1283,16 +1768,109 @@ class AdvancedTradingGUI:
                 logger.info(f"   🔒 Risk check: {'PASS' if risk_ok else 'FAIL'}")
                 
                 if risk_ok:
-                    self.log_message(f"🚀 EXECUTING TRADE: {candidate['symbol']} for ${position_size:.2f}")
-                    # Execute trade (simulated)
-                    self.execute_microcap_trade(candidate, position_size)
+                    self.log_message(f"🚀 EXECUTING TRADE: {candidate['symbol']} for ${position_size:.2f} "
+                                   f"(Strategy: {strategy_signal.strategy.value.upper()}, Confidence: {strategy_signal.confidence:.2f})")
+                    logger.info(f"   📞 Calling execute_microcap_trade with {candidate['symbol']}")
+                    # Execute trade with strategy-specific parameters
+                    self.execute_microcap_trade(candidate, strategy_signal)
+                    logger.info(f"   ✅ Trade execution completed for {candidate['symbol']}")
                     break  # Only execute one trade per cycle
                 else:
                     self.log_message(f"❌ {candidate['symbol']}: Risk limits exceeded")
+                    logger.info(f"   📊 Current trading value: ${sum(pos.get('position_size', 0) for pos in self.active_positions.values()):.2f}")
+                    logger.info(f"   📊 Portfolio risk would be: {((sum(pos.get('position_size', 0) for pos in self.active_positions.values()) + position_size) / self.total_portfolio_value * 100):.1f}%")
+                    logger.info(f"   📊 Risk limit: {self.current_risk_profile.max_portfolio_risk:.1f}%")
                     
             except Exception as e:
+                import traceback
                 logger.error(f"Trade evaluation error for {candidate['symbol']}: {e}")
+                logger.error(f"Full traceback: {traceback.format_exc()}")
                 self.log_message(f"❌ Trade evaluation error for {candidate['symbol']}: {str(e)}")
+    
+    def evaluate_duplex_strategy(self, candidate: Dict):
+        """Evaluate candidate using duplex strategy system"""
+        try:
+            # Enhance candidate with technical analysis if not already done
+            if 'technical_analysis' not in candidate:
+                candidate = enhance_candidate_with_technical_analysis(candidate, self.technical_analyzer)
+            
+            # Extract technical data for strategy evaluation
+            technical_data = candidate.get('technical_analysis', {})
+            indicators = technical_data.get('indicators', {})
+            
+            technical_input = {
+                'rsi': indicators.get('rsi', 50),
+                'bb_position': indicators.get('bollinger_bands', {}).get('position', 0.5),
+                'macd_signal': self._get_macd_signal(indicators.get('macd', {})),
+                'volume_24h': candidate.get('volume_24h', 0),
+                'volatility': candidate.get('volatility_score', 5.0),
+                'market_cap': candidate.get('market_cap', 0),
+                'liquidity': candidate.get('liquidity_usd', 0)
+            }
+            
+            # Market conditions assessment
+            market_conditions = {
+                'volatility': self._assess_market_volatility(),
+                'trend': 'neutral',  # Could be enhanced with broader market analysis
+                'time_of_day': datetime.now().hour
+            }
+            
+            # Use duplex strategy to evaluate
+            strategy_signal = self.duplex_strategy.evaluate_opportunity(
+                candidate, technical_input, market_conditions, self.available_capital
+            )
+            
+            return strategy_signal
+            
+        except Exception as e:
+            logger.error(f"❌ Duplex strategy evaluation error for {candidate.get('symbol', 'UNKNOWN')}: {e}")
+            # Fallback to skip strategy
+            from src.strategies.duplex_strategy import StrategySignal, TradeStrategy
+            return StrategySignal(
+                strategy=TradeStrategy.SKIP,
+                confidence=0.0,
+                position_size=0.0,
+                stop_loss=0.0,
+                take_profit=0.0,
+                hold_duration="none",
+                reasoning=f"Evaluation error: {str(e)}",
+                technical_score=0.0,
+                fundamental_score=0.0
+            )
+    
+    def _get_macd_signal(self, macd_data: Dict) -> str:
+        """Convert MACD data to signal string"""
+        histogram = macd_data.get('histogram', 0)
+        if histogram > 0.01:
+            return 'BULLISH'
+        elif histogram < -0.01:
+            return 'BEARISH'
+        else:
+            return 'NEUTRAL'
+    
+    def _assess_market_volatility(self) -> str:
+        """Assess overall market volatility"""
+        # Simple assessment based on active positions volatility
+        if not self.active_positions:
+            return 'medium'
+        
+        total_volatility = 0
+        count = 0
+        for pos in self.active_positions.values():
+            if 'volatility_score' in pos:
+                total_volatility += pos.get('volatility_score', 5.0)
+                count += 1
+        
+        if count == 0:
+            return 'medium'
+        
+        avg_volatility = total_volatility / count
+        if avg_volatility > 7.0:
+            return 'high'
+        elif avg_volatility < 4.0:
+            return 'low'
+        else:
+            return 'medium'
     
     def calculate_position_size(self, candidate: Dict) -> float:
         """Calculate position size based on risk profile and candidate metrics"""
@@ -1300,15 +1878,44 @@ class AdvancedTradingGUI:
         base_size = self.available_capital * (self.current_risk_profile.position_size_base / 100)
         logger.info(f"       💰 Base size ({self.current_risk_profile.position_size_base}% of ${self.available_capital:.2f}): ${base_size:.2f}")
         
-        # Adjust for volatility
-        volatility_adj = candidate['volatility_score'] / 10.0 * self.current_risk_profile.volatility_multiplier
-        adjusted_size = base_size * volatility_adj
-        logger.info(f"       📈 Volatility adjusted (score={candidate['volatility_score']:.2f}): ${adjusted_size:.2f}")
+        # Adjust for volatility (ensure minimum volatility for scalping)
+        volatility_score = max(candidate.get('volatility_score', 5.0), 1.0)  # Minimum 1.0 for scalping
         
-        # Adjust for confidence
-        confidence_adj = candidate['confidence']
+        # For scalping mode, use different volatility calculation to ensure viable trade sizes
+        if self.discovery_mode == 'scalping':
+            # Scalping uses higher base volatility to ensure trade sizes are viable
+            volatility_adj = min(volatility_score / 5.0, 2.0) * self.current_risk_profile.volatility_multiplier
+        else:
+            # Normal mode uses standard calculation
+            volatility_adj = volatility_score / 10.0 * self.current_risk_profile.volatility_multiplier
+            
+        adjusted_size = base_size * volatility_adj
+        logger.info(f"       📈 Volatility adjusted (score={volatility_score:.2f}): ${adjusted_size:.2f}")
+        
+        # Adjust for enhanced confidence (ML + original metrics)
+        confidence_adj = candidate.get('enhanced_confidence', candidate.get('confidence', 0.5))
+        
+        # Add performance-based adjustment for scalping
+        if self.discovery_mode == 'scalping':
+            performance_score = candidate.get('performance_score', self.get_token_performance_score(candidate.get('symbol', '')))
+            # Performance adjustment: good performers get up to 50% more, bad performers get 25% less
+            performance_adj = 0.75 + (performance_score * 0.75)  # Range: 0.75 to 1.5
+            confidence_adj = confidence_adj * performance_adj
+            logger.info(f"       ⭐ Performance adjusted (score={performance_score:.2f}): confidence={confidence_adj:.2f}")
+        
         final_size = adjusted_size * confidence_adj
-        logger.info(f"       🎯 Confidence adjusted ({confidence_adj:.2f}): ${final_size:.2f}")
+        logger.info(f"       🎯 Final confidence adjusted ({confidence_adj:.2f}): ${final_size:.2f}")
+        
+        # Apply ML risk adjustment if available
+        if 'ml_risk_score' in candidate:
+            if self.discovery_mode == 'scalping':
+                # Scalping major coins - lower risk penalty since these are established coins
+                ml_risk_adj = 1.0 - (candidate['ml_risk_score'] * 0.15)  # Max 15% reduction vs 30% for microcaps
+            else:
+                # Full risk penalty for microcaps
+                ml_risk_adj = 1.0 - (candidate['ml_risk_score'] * 0.3)  # Reduce size by up to 30% for high ML risk
+            final_size = final_size * ml_risk_adj
+            logger.info(f"       🤖 ML risk adjusted (risk={candidate['ml_risk_score']:.2f}): ${final_size:.2f}")
         
         # Apply limits and ensure we can afford gas fees
         max_affordable = min(final_size, self.current_risk_profile.max_position_size)
@@ -1343,12 +1950,25 @@ class AdvancedTradingGUI:
         risk_ok = total_risk_after <= self.current_risk_profile.max_portfolio_risk
         return risk_ok
     
-    def execute_microcap_trade(self, candidate: Dict, position_size: float):
-        """Execute a microcap trade (simulated) with gas fee tracking"""
+    def execute_microcap_trade(self, candidate: Dict, strategy_signal):
+        """Execute a microcap trade (simulated) with duplex strategy parameters"""
+        logger.info(f"🔥 STARTING TRADE EXECUTION for {candidate['symbol']}")
+        logger.info(f"   Strategy: {strategy_signal.strategy.value}")
+        logger.info(f"   Position size: ${strategy_signal.position_size:.2f}")
+        logger.info(f"   Available capital: ${self.available_capital:.2f}")
+        
         try:
+            # Extract strategy-specific parameters
+            position_size = strategy_signal.position_size
+            strategy_type = strategy_signal.strategy.value
+            
             # Simulate trade execution
             entry_price = 1.0  # Placeholder
             quantity = position_size / entry_price
+            
+            # Use strategy-specific stop loss and take profit
+            stop_loss = strategy_signal.stop_loss
+            take_profit = strategy_signal.take_profit
             
             # Estimate and track gas fees
             gas_cost = self.estimate_trade_cost(position_size) - position_size
@@ -1365,7 +1985,7 @@ class AdvancedTradingGUI:
             except Exception as e:
                 logger.warning(f"⚠️ Failed to record gas usage: {e}")
             
-            # Create position record
+            # Create position record with strategy information
             position_id = f"{candidate['symbol']}_{int(time.time())}"
             position = {
                 'id': position_id,
@@ -1379,24 +1999,29 @@ class AdvancedTradingGUI:
                 'position_size': position_size,  # Add for consistency
                 'gas_cost': gas_cost,
                 'total_cost': total_cost,
-                'stop_loss': entry_price * (1 - self.current_risk_profile.stop_loss_pct / 100),
-                'take_profit': entry_price * (1 + self.current_risk_profile.take_profit_pct / 100),
+                'stop_loss': stop_loss,  # Use strategy-specific stop loss
+                'take_profit': take_profit,  # Use strategy-specific take profit
                 'entry_time': datetime.now(),
                 'pnl': 0.0,
                 'risk_profile': self.current_risk_profile.name,
                 'market_cap': candidate.get('market_cap', 0),
                 'confidence': candidate.get('confidence', 0),
                 'rugpull_risk': candidate.get('rugpull_risk', 0),
-                'discovery_source': candidate.get('discovery_source', 'unknown')
+                'discovery_source': candidate.get('discovery_source', 'unknown'),
+                'strategy_type': strategy_type,  # Track which strategy was used
+                'strategy_confidence': strategy_signal.confidence,
+                'expected_duration': strategy_signal.hold_duration,
+                'strategy_reasoning': strategy_signal.reasoning
             }
             
             self.active_positions[position_id] = position
             self.available_capital -= total_cost
             
-            # Log trade with gas fee information
+            # Log trade with strategy and gas fee information
             self.log_message(f"🎯 TRADE: Bought {candidate['symbol']} - ${position_size:.2f} @ ${entry_price:.4f}")
             self.log_message(f"⛽ Gas Cost: ${gas_cost:.4f} | Total Cost: ${total_cost:.2f}")
             self.log_message(f"📊 SL: ${position['stop_loss']:.4f} | TP: ${position['take_profit']:.4f}")
+            self.log_message(f"🎯 Strategy: {strategy_type.upper()} | Duration: {strategy_signal.hold_duration}")
             self.log_message(f"💰 Available Capital: ${self.available_capital:.2f}")
             
             # Debug: Log active positions count
@@ -1409,6 +2034,9 @@ class AdvancedTradingGUI:
             # Store in database
             self.store_trade_in_db(position, candidate)
             
+            # Check if ML retraining is needed after new trade
+            self.check_ml_retraining_trigger()
+            
         except Exception as e:
             logger.error(f"❌ Trade execution failed: {e}")
             self.log_message(f"❌ Trade execution failed: {str(e)}")
@@ -1416,11 +2044,19 @@ class AdvancedTradingGUI:
     def update_portfolio_display(self):
         """Update portfolio display with current values including gas information"""
         try:
-            # Update portfolio value
+            # Update portfolio value label
+            if hasattr(self, 'portfolio_value_label'):
+                self.portfolio_value_label.configure(text=f"Portfolio: ${self.total_portfolio_value:,.2f}")
+            
+            # Update available capital label
+            if hasattr(self, 'available_capital_label'):
+                self.available_capital_label.configure(text=f"Available: ${self.available_capital:,.2f}")
+            
+            # Update portfolio value variables (if they exist from other GUI elements)
             if hasattr(self, 'portfolio_value_var'):
                 self.portfolio_value_var.set(f"Total: ${self.total_portfolio_value:,.2f}")
             
-            # Update available capital
+            # Update available capital variables (if they exist from other GUI elements)
             if hasattr(self, 'available_capital_var'):
                 self.available_capital_var.set(f"Available: ${self.available_capital:,.2f}")
             
@@ -1451,16 +2087,56 @@ class AdvancedTradingGUI:
         
         for pos_id, position in self.active_positions.items():
             try:
-                # Simulate price updates (in real implementation, get from exchange)
+                # Get technical analysis for better exit timing
+                symbol = position.get('symbol', '')
+                
+                # Generate realistic price movement based on technical analysis
                 import random
-                price_change = random.uniform(-0.05, 0.05)  # ±5% random change
+                
+                if self.discovery_mode == 'scalping':
+                    # Simulate price with technical bias
+                    base_change = random.uniform(-0.025, 0.035)  # Base random movement
+                    
+                    # Get technical bias if available (simulate momentum)
+                    if hasattr(position, 'technical_score'):
+                        technical_bias = position.get('technical_score', 0) * 0.01  # Small bias
+                        base_change += technical_bias
+                    
+                    price_change = base_change
+                else:
+                    # Microcaps can be very volatile: ±30% swings are common
+                    price_change = random.uniform(-0.30, 0.30)  # ±30% random change
+                    
                 position['current_price'] = position['entry_price'] * (1 + price_change)
                 
                 # Calculate P&L
                 position['pnl'] = (position['current_price'] - position['entry_price']) * position['quantity']
+                position['pnl_percent'] = ((position['current_price'] - position['entry_price']) / position['entry_price']) * 100
                 
-                # Check exit conditions
-                should_exit, exit_reason = self.check_exit_conditions(position)
+                # Apply dynamic profit optimization for winning positions
+                price_change_pct = position['pnl_percent'] / 100.0
+                if (price_change_pct > 0.02 and  # If up 2%+ 
+                    self.profit_optimizer.should_extend_targets(position, price_change_pct)):
+                    
+                    # Get current market data (simulated for now)
+                    current_data = {
+                        'volume_24h': random.uniform(50000, 500000),
+                        'volatility_score': random.uniform(3.0, 12.0)
+                    }
+                    market_conditions = {'trend': 'bullish'}
+                    
+                    # Optimize profit targets
+                    new_tp, optimization_info = self.profit_optimizer.optimize_profit_targets(
+                        position, current_data, market_conditions
+                    )
+                    
+                    # Update take profit if extended
+                    if optimization_info.get('extended', False):
+                        position['take_profit'] = new_tp
+                        logger.info(f"🎯 {symbol}: Profit target optimized - {optimization_info['reasoning']}")
+                
+                # Enhanced exit conditions with technical analysis
+                should_exit, exit_reason = self.check_exit_conditions_with_technical(position)
                 
                 if should_exit:
                     positions_to_close.append((pos_id, exit_reason))
@@ -1471,9 +2147,79 @@ class AdvancedTradingGUI:
         # Close positions that met exit criteria
         for pos_id, exit_reason in positions_to_close:
             self.close_position(pos_id, exit_reason)
+        
+        # Log position monitoring activity if positions were checked
+        if self.active_positions:
+            logger.info(f"📊 Monitored {len(self.active_positions)} positions, closing {len(positions_to_close)}")
+        elif positions_to_close:
+            logger.info(f"📊 Closed {len(positions_to_close)} positions this cycle")
+    
+    def check_exit_conditions_with_technical(self, position: Dict) -> tuple[bool, str]:
+        """Check if position should be closed using technical analysis"""
+        current_price = position['current_price']
+        entry_price = position['entry_price']
+        symbol = position.get('symbol', '')
+        
+        # Standard stop loss and take profit
+        if current_price <= position['stop_loss']:
+            return True, "Stop Loss"
+        
+        if current_price >= position['take_profit']:
+            return True, "Take Profit"
+        
+        # Enhanced technical exit conditions for scalping
+        if self.discovery_mode == 'scalping':
+            price_change_pct = ((current_price - entry_price) / entry_price) * 100
+            
+            # Quick technical analysis for exit decisions
+            # Simulate RSI and momentum for exit timing
+            import random
+            simulated_rsi = random.uniform(20, 80)
+            
+            # Early exit on strong technical signals
+            if price_change_pct > 1.5 and simulated_rsi > 75:  # Profit + overbought
+                return True, "Technical Overbought"
+            
+            if price_change_pct < -1.0 and simulated_rsi < 25:  # Loss + oversold momentum down
+                return True, "Technical Breakdown"
+            
+            # Enhanced trailing stop system for winning positions
+            if price_change_pct > 2.0:  # If up 2%+
+                # Get strategy-specific trailing parameters
+                strategy = position.get('discovery_mode', 'scalping')
+                
+                if strategy == 'scalping':
+                    # Aggressive trailing for scalp trades
+                    if price_change_pct > 5.0:  # If up 5%+, trail at 3%
+                        trailing_stop = entry_price * 1.03
+                    elif price_change_pct > 3.5:  # If up 3.5%+, trail at 2%
+                        trailing_stop = entry_price * 1.02
+                    else:  # If up 2%+, trail at 1.5%
+                        trailing_stop = entry_price * 1.015
+                else:  # swing strategy
+                    # Conservative trailing for swing trades  
+                    if price_change_pct > 15.0:  # If up 15%+, trail at 10%
+                        trailing_stop = entry_price * 1.10
+                    elif price_change_pct > 10.0:  # If up 10%+, trail at 7%
+                        trailing_stop = entry_price * 1.07
+                    elif price_change_pct > 6.0:  # If up 6%+, trail at 4%
+                        trailing_stop = entry_price * 1.04
+                    else:  # If up 2%+, trail at 1.5%
+                        trailing_stop = entry_price * 1.015
+                
+                # Update the position's stop loss to the trailing stop if higher
+                if trailing_stop > position['stop_loss']:
+                    position['stop_loss'] = trailing_stop
+                    logger.info(f"📈 Updated trailing stop for {position['symbol']}: ${trailing_stop:.6f} (was ${position['stop_loss']:.6f})")
+                
+                if current_price <= trailing_stop:
+                    return True, "Trailing Stop"
+        
+        # Pure technical analysis - no time limits
+        return False, ""
     
     def check_exit_conditions(self, position: Dict) -> tuple[bool, str]:
-        """Check if position should be closed"""
+        """Check if position should be closed (legacy method)"""
         current_price = position['current_price']
         
         # Stop loss
@@ -1497,20 +2243,41 @@ class AdvancedTradingGUI:
             position = self.active_positions[position_id]
             
             # Calculate final P&L
+            position_value = position.get('position_value', position.get('position_size', 0))
             exit_value = position['current_price'] * position['quantity']
-            final_pnl = exit_value - position['position_value']
+            final_pnl = exit_value - position_value
             
             # Update portfolio
             self.available_capital += exit_value
             self.daily_pnl += final_pnl
             self.total_portfolio_value += final_pnl
             
-            # Log closure
-            pnl_pct = (final_pnl / position['position_value']) * 100
-            self.log_message(f"🔄 CLOSE: {position['symbol']} - {exit_reason} - P&L: ${final_pnl:+.2f} ({pnl_pct:+.1f}%)")
+            # Log closure with more detail
+            pnl_pct = (final_pnl / position_value) * 100
+            symbol = position['symbol']
+            
+            # Update token performance tracking
+            self.update_token_performance(symbol, pnl_pct, exit_reason == "Take Profit")
+            
+            if exit_reason == "Take Profit":
+                self.log_message(f"🎯 PROFIT: {symbol} - ${final_pnl:+.2f} ({pnl_pct:+.1f}%) - Target Hit!")
+                logger.info(f"� TAKE PROFIT: {symbol} position closed with {pnl_pct:+.1f}% gain")
+            elif exit_reason == "Stop Loss":
+                self.log_message(f"🛡️ STOP: {symbol} - ${final_pnl:+.2f} ({pnl_pct:+.1f}%) - Loss Limited")
+                logger.info(f"🔒 STOP LOSS: {symbol} position closed with {pnl_pct:+.1f}% loss")
+            else:
+                self.log_message(f"🔄 CLOSE: {symbol} - {exit_reason} - P&L: ${final_pnl:+.2f} ({pnl_pct:+.1f}%)")
+                logger.info(f"📊 POSITION CLOSED: {symbol} - {exit_reason} - {pnl_pct:+.1f}%")
             
             # Remove from active positions
             del self.active_positions[position_id]
+            
+            # Add cooldown for losing trades to prevent immediate re-entry
+            if exit_reason == "Stop Loss" and final_pnl < 0:
+                cooldown_minutes = 1  # 1-minute cooldown (reduced from 3 minutes)
+                cooldown_until = datetime.now() + timedelta(minutes=cooldown_minutes)
+                self.trade_cooldowns[symbol] = cooldown_until
+                logger.info(f"🕒 Added {cooldown_minutes}min cooldown for {symbol} until {cooldown_until.strftime('%H:%M:%S')}")
             
             # Update database
             self.update_trade_in_db(position, final_pnl, exit_reason)
@@ -1518,20 +2285,87 @@ class AdvancedTradingGUI:
         except Exception as e:
             logger.error(f"Position closing error: {e}")
             self.log_message(f"❌ Failed to close position {position_id}: {str(e)}")
-    
+
+    def load_active_positions(self):
+        """Load active positions from database on startup"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute('''
+                    SELECT position_id, symbol, side, quantity, entry_price, 
+                           stop_loss, take_profit, position_size, entry_time,
+                           risk_profile, confidence, market_cap, rugpull_risk,
+                           discovery_mode
+                    FROM trades 
+                    WHERE status = 'active' AND position_id IS NOT NULL
+                ''')
+                
+                restored_count = 0
+                for row in cursor.fetchall():
+                    try:
+                        position_id, symbol, side, quantity, entry_price, stop_loss, take_profit, position_size, entry_time_str, risk_profile, confidence, market_cap, rugpull_risk, discovery_mode = row
+                        
+                        # Parse entry time
+                        if entry_time_str:
+                            entry_time = datetime.fromisoformat(entry_time_str)
+                        else:
+                            entry_time = datetime.now()
+                        
+                        # Create position dictionary matching the format used in execute_trade
+                        position = {
+                            'id': position_id,
+                            'symbol': symbol,
+                            'side': side,
+                            'quantity': quantity,
+                            'entry_price': entry_price,
+                            'current_price': entry_price,  # Will be updated by monitoring
+                            'stop_loss': stop_loss,
+                            'take_profit': take_profit,
+                            'position_size': position_size,
+                            'entry_time': entry_time,
+                            'risk_profile': risk_profile,
+                            'pnl': 0.0,  # Will be calculated by monitoring
+                            'pnl_percent': 0.0,  # Will be calculated by monitoring
+                            'discovery_mode': discovery_mode or 'scalping'
+                        }
+                        
+                        # Add to active positions
+                        self.active_positions[position_id] = position
+                        restored_count += 1
+                        
+                        logger.info(f"🔄 Restored position: {symbol} (${position_size:.2f}) from {entry_time.strftime('%H:%M:%S')}")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Failed to restore position {position_id}: {e}")
+                        continue
+                
+                if restored_count > 0:
+                    logger.info(f"✅ Restored {restored_count} active positions from database")
+                    self.log_message(f"🔄 Restored {restored_count} active positions from previous session")
+                    # Update the positions display
+                    if hasattr(self, 'update_positions_display'):
+                        self.update_positions_display()
+                else:
+                    logger.info("📋 No active positions to restore")
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to load active positions: {e}")
+            self.log_message(f"⚠️ Could not restore positions: {str(e)}")
+
     # =============================================================================
     # DATABASE OPERATIONS
     # =============================================================================
     
     def store_trade_in_db(self, position: Dict, candidate: Dict):
-        """Store trade in database"""
+        """Store trade in database with full position data for restoration"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute('''
-                    INSERT INTO trades (timestamp, symbol, side, quantity, entry_price, 
-                                      pnl, risk_profile, confidence, market_cap, rugpull_risk, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO trades (position_id, timestamp, symbol, side, quantity, entry_price, 
+                                      pnl, risk_profile, confidence, market_cap, rugpull_risk, status,
+                                      stop_loss, take_profit, position_size, entry_time, discovery_mode)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
+                    position['id'],
                     position['entry_time'].isoformat(),
                     position['symbol'],
                     position['side'],
@@ -1542,8 +2376,14 @@ class AdvancedTradingGUI:
                     candidate['confidence'],
                     candidate['market_cap'],
                     candidate['rugpull_risk'],
-                    'active'
+                    'active',
+                    position.get('stop_loss'),
+                    position.get('take_profit'),
+                    position.get('position_size'),
+                    position['entry_time'].isoformat(),
+                    position.get('discovery_mode', 'scalping')
                 ))
+                logger.info(f"💾 Stored position {position['id']} in database for persistence")
         except Exception as e:
             logger.error(f"Database storage error: {e}")
     
@@ -1551,18 +2391,250 @@ class AdvancedTradingGUI:
         """Update trade with exit information"""
         try:
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute('''
-                    UPDATE trades SET exit_price = ?, pnl = ?, status = ?
-                    WHERE symbol = ? AND entry_price = ? AND status = 'active'
-                ''', (
-                    position['current_price'],
-                    final_pnl,
-                    f'closed_{exit_reason.lower().replace(" ", "_")}',
-                    position['symbol'],
-                    position['entry_price']
-                ))
+                # Use position_id for accurate identification if available
+                if 'id' in position:
+                    conn.execute('''
+                        UPDATE trades SET exit_price = ?, pnl = ?, status = ?
+                        WHERE position_id = ? AND status = 'active'
+                    ''', (
+                        position['current_price'],
+                        final_pnl,
+                        f'closed_{exit_reason.lower().replace(" ", "_")}',
+                        position['id']
+                    ))
+                    logger.info(f"💾 Updated position {position['id']} in database: {exit_reason}")
+                else:
+                    # Fallback to old method for backwards compatibility
+                    conn.execute('''
+                        UPDATE trades SET exit_price = ?, pnl = ?, status = ?
+                        WHERE symbol = ? AND entry_price = ? AND status = 'active'
+                    ''', (
+                        position['current_price'],
+                        final_pnl,
+                        f'closed_{exit_reason.lower().replace(" ", "_")}',
+                        position['symbol'],
+                        position['entry_price']
+                    ))
         except Exception as e:
             logger.error(f"Database update error: {e}")
+    
+    def update_token_performance(self, symbol: str, pnl_pct: float, is_winner: bool):
+        """Update token performance tracking"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Get current performance or create new record
+                cursor = conn.execute('''
+                    SELECT total_trades, winning_trades, total_pnl, avg_return 
+                    FROM token_performance WHERE symbol = ?
+                ''', (symbol,))
+                
+                result = cursor.fetchone()
+                
+                if result:
+                    total_trades, winning_trades, total_pnl, avg_return = result
+                    total_trades += 1
+                    winning_trades += 1 if is_winner else 0
+                    total_pnl += pnl_pct
+                    avg_return = total_pnl / total_trades
+                else:
+                    total_trades = 1
+                    winning_trades = 1 if is_winner else 0
+                    total_pnl = pnl_pct
+                    avg_return = pnl_pct
+                
+                # Calculate performance score (0.0 to 1.0)
+                win_rate = winning_trades / total_trades
+                return_factor = max(0, min(2, (avg_return + 10) / 20))  # -10% to +10% maps to 0-1
+                performance_score = (win_rate * 0.7 + return_factor * 0.3)  # Weight win rate more
+                
+                # Update or insert record
+                conn.execute('''
+                    INSERT OR REPLACE INTO token_performance 
+                    (symbol, total_trades, winning_trades, total_pnl, avg_return, last_updated, performance_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (symbol, total_trades, winning_trades, total_pnl, avg_return, 
+                      datetime.now().isoformat(), performance_score))
+                
+                logger.info(f"📈 {symbol} performance: {winning_trades}/{total_trades} wins, "
+                           f"avg: {avg_return:+.1f}%, score: {performance_score:.2f}")
+                
+        except Exception as e:
+            logger.error(f"Performance tracking error for {symbol}: {e}")
+    
+    def get_token_performance_score(self, symbol: str) -> float:
+        """Get performance score for token (0.5 default for new tokens)"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute('''
+                    SELECT performance_score FROM token_performance WHERE symbol = ?
+                ''', (symbol,))
+                result = cursor.fetchone()
+                return result[0] if result else 0.5  # Default neutral score
+        except Exception:
+            return 0.5
+    
+    # =============================================================================
+    # MACHINE LEARNING OPERATIONS
+    # =============================================================================
+    
+    def analyze_trading_performance(self) -> Dict:
+        """Analyze historical trading data for ML training"""
+        if not self.ml_available or not self.ml_predictor or not PANDAS_AVAILABLE:
+            return {}
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Get completed trades
+                trades_df = pd.read_sql_query('''
+                    SELECT timestamp, symbol, entry_price, exit_price, pnl, 
+                           risk_profile, confidence, market_cap, rugpull_risk,
+                           quantity,
+                           CASE 
+                               WHEN pnl > 0 THEN (pnl / (entry_price * quantity)) * 100
+                               ELSE (pnl / (entry_price * quantity)) * 100
+                           END as realized_pnl_percent
+                    FROM trades 
+                    WHERE status LIKE 'closed_%' AND exit_price IS NOT NULL
+                    ORDER BY timestamp DESC
+                ''', conn)
+                
+                if len(trades_df) < 5:  # Need minimum trades for analysis
+                    logger.info(f"📊 ML: Only {len(trades_df)} completed trades - need more data for training")
+                    return {"trades_count": len(trades_df), "status": "insufficient_data"}
+                
+                # Calculate performance metrics
+                total_trades = len(trades_df)
+                profitable_trades = len(trades_df[trades_df['realized_pnl_percent'] > 0])
+                win_rate = profitable_trades / total_trades if total_trades > 0 else 0
+                avg_return = trades_df['realized_pnl_percent'].mean()
+                avg_win = trades_df[trades_df['realized_pnl_percent'] > 0]['realized_pnl_percent'].mean()
+                avg_loss = trades_df[trades_df['realized_pnl_percent'] < 0]['realized_pnl_percent'].mean()
+                
+                performance_metrics = {
+                    "trades_count": total_trades,
+                    "win_rate": win_rate,
+                    "avg_return": avg_return,
+                    "avg_win": avg_win if pd.notna(avg_win) else 0,
+                    "avg_loss": avg_loss if pd.notna(avg_loss) else 0,
+                    "status": "ready_for_training" if total_trades >= 10 else "limited_data"
+                }
+                
+                logger.info(f"🧠 ML Analysis: {total_trades} trades, {win_rate:.1%} win rate, {avg_return:.1f}% avg return")
+                return performance_metrics
+                
+        except Exception as e:
+            logger.error(f"❌ ML analysis error: {e}")
+            return {"error": str(e)}
+    
+    def get_ml_prediction(self, candidate: Dict) -> Dict:
+        """Get ML prediction for a token candidate"""
+        if not self.ml_available or not self.ml_predictor:
+            # Return default prediction when ML is not available
+            return {
+                'confidence': 0.7,
+                'recommendation': 'BUY',  # Default for scalping targets
+                'risk_score': 0.3,
+                'expected_return': 3.0  # 3% expected return for scalping
+            }
+        
+        try:
+            # Convert candidate to format expected by ML predictor
+            token_data = {
+                'symbol': candidate.get('symbol', ''),
+                'market_cap': candidate.get('market_cap', 0),
+                'daily_volume': candidate.get('daily_volume', 0),
+                'volatility_score': candidate.get('volatility_score', 0),
+                'rugpull_risk': candidate.get('rugpull_risk', 0.5),
+                'confidence': candidate.get('confidence', 0.5),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Get prediction from ML model
+            prediction = self.ml_predictor.predict_token_performance(
+                token_data, 
+                timeframe=PredictionTimeframe.HOURS_24
+            )
+            
+            if prediction:
+                logger.info(f"🧠 ML Prediction for {candidate['symbol']}: {prediction.get('expected_return', 0):.1f}% return, {prediction.get('confidence', 0):.1%} confidence")
+                return prediction
+            
+        except Exception as e:
+            logger.error(f"❌ ML prediction error for {candidate.get('symbol', 'unknown')}: {e}")
+        
+        # Fallback prediction
+        return {
+            'confidence': 0.6,
+            'recommendation': 'HOLD',
+            'risk_score': 0.4,
+            'expected_return': 2.0
+        }
+    
+    def trigger_ml_training(self):
+        """Trigger ML model training with latest data"""
+        if not self.ml_available or not self.training_pipeline:
+            return
+        
+        try:
+            # Analyze current performance
+            performance = self.analyze_trading_performance()
+            
+            if performance.get("trades_count", 0) < 10:
+                logger.info("🧠 ML: Insufficient data for training (need 10+ completed trades)")
+                return
+            
+            # Trigger background training
+            def train_models():
+                try:
+                    logger.info("🧠 ML: Starting model training...")
+                    self.training_pipeline.train_and_validate(db_path=self.db_path)
+                    logger.info("✅ ML: Model training completed successfully")
+                    if hasattr(self, 'log_message'):
+                        self.log_message("🧠 ML models retrained with latest data")
+                except Exception as e:
+                    logger.error(f"❌ ML training error: {e}")
+            
+            # Run training in background thread
+            training_thread = threading.Thread(target=train_models, daemon=True)
+            training_thread.start()
+            
+        except Exception as e:
+            logger.error(f"❌ ML training trigger error: {e}")
+    
+    def check_ml_retraining_trigger(self):
+        """Check if ML models should be retrained based on new data"""
+        if not self.ml_available:
+            return
+        
+        try:
+            # Check how many new trades since last training
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute('''
+                    SELECT COUNT(*) FROM trades 
+                    WHERE timestamp > datetime('now', '-24 hours')
+                ''')
+                recent_trades = cursor.fetchone()[0]
+                
+                cursor = conn.execute('SELECT COUNT(*) FROM trades')
+                total_trades = cursor.fetchone()[0]
+            
+            # Trigger retraining if:
+            # 1. We have at least 20 total trades AND
+            # 2. We have 5+ new trades in last 24 hours OR every 50 total trades
+            should_retrain = (
+                total_trades >= 20 and 
+                (recent_trades >= 5 or total_trades % 50 == 0)
+            )
+            
+            if should_retrain:
+                logger.info(f"🧠 ML: Triggering retraining - {total_trades} total trades, {recent_trades} recent")
+                self.log_message(f"🧠 Triggering ML retraining ({recent_trades} new trades)")
+                self.trigger_ml_training()
+            else:
+                logger.debug(f"🧠 ML: No retraining needed - {total_trades} total, {recent_trades} recent")
+                
+        except Exception as e:
+            logger.error(f"❌ ML retraining check error: {e}")
     
     # =============================================================================
     # GUI UPDATE METHODS
@@ -1586,8 +2658,12 @@ class AdvancedTradingGUI:
             # Update candidates tree
             self.update_candidates_tree()
             
-            # Update positions tree
-            self.update_positions_tree()
+            # Update positions tree (thread-safe)
+            try:
+                self.update_positions_tree()
+            except Exception as e:
+                if "main thread" not in str(e):
+                    logger.error(f"❌ Position tree update failed: {e}")
             
             # Update allocation text
             self.update_allocation_display()
@@ -1622,16 +2698,18 @@ class AdvancedTradingGUI:
         # Debug: Log what positions we're trying to display
         logger.info(f"🔍 Updating positions tree with {len(self.active_positions)} positions")
         for pos_id, position in self.active_positions.items():
-            logger.info(f"   Position: {pos_id} - {position['symbol']} ${position['position_value']:.2f}")
+            position_value = position.get('position_value', position.get('position_size', 0))
+            logger.info(f"   Position: {pos_id} - {position['symbol']} ${position_value:.2f}")
         
         # Add current positions with improved formatting
         for position in self.active_positions.values():
-            pnl_pct = (position['pnl'] / position['position_value']) * 100 if position['position_value'] > 0 else 0
+            position_value = position.get('position_value', position.get('position_size', 0))
+            pnl_pct = (position['pnl'] / position_value) * 100 if position_value > 0 else 0
             
             # Format values with proper precision
             symbol = position['symbol'][:8]  # Limit symbol length
             side = position['side'].upper()
-            size = f"${position['position_value']:.2f}"
+            size = f"${position_value:.2f}"
             entry = f"${position['entry_price']:.6f}" if position['entry_price'] < 1 else f"${position['entry_price']:.4f}"
             current = f"${position['current_price']:.6f}" if position['current_price'] < 1 else f"${position['current_price']:.4f}"
             risk = position['risk_profile'][:8]  # Limit risk profile length
@@ -1663,7 +2741,8 @@ class AdvancedTradingGUI:
 """        
         
         for position in self.active_positions.values():
-            allocation_pct = (position['position_value'] / self.total_portfolio_value) * 100
+            position_value = position.get('position_value', position.get('position_size', 0))
+            allocation_pct = (position_value / self.total_portfolio_value) * 100
             allocation_info += f"  • {position['symbol']}: {allocation_pct:.1f}%\n"
         
         allocation_info += f"\n🎯 Risk Profile: {self.current_risk_profile.name}\n"
@@ -1678,13 +2757,23 @@ class AdvancedTradingGUI:
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {message}\n"
         
+        # Skip GUI operations in headless mode
+        if getattr(self, 'headless_mode', False):
+            logger.info(message)
+            return
+        
         # Update GUI log immediately
         try:
-            self.log_text.insert(tk.END, log_entry)
-            self.log_text.see(tk.END)
+            if hasattr(self, 'log_text'):
+                self.log_text.insert(tk.END, log_entry)
+                self.log_text.see(tk.END)
         except:
             # If called from thread, schedule GUI update
-            self.root.after(0, lambda: self._append_to_log(log_entry))
+            if hasattr(self, 'root'):
+                try:
+                    self.root.after(0, lambda: self._append_to_log(log_entry))
+                except:
+                    pass  # Ignore GUI errors in auto mode
         
         # Log to console
         logger.info(message)
@@ -1718,7 +2807,7 @@ class AdvancedTradingGUI:
             self.log_message("💡 Adding demo position for display testing...")
             demo_position = {
                 'id': 'demo_token_123',
-                'symbol': 'TOKEN',
+                'symbol': 'PEPE',
                 'contract_address': 'Ch2veYHxMWBDgw77nxWvJeGz6YjBD2g9cm21fNriGjGE',
                 'side': 'long',
                 'quantity': 2.5,  # Very small position
@@ -1739,10 +2828,15 @@ class AdvancedTradingGUI:
                 'discovery_source': 'curated'
             }
             self.active_positions['demo_token_123'] = demo_position
-            self.log_message("✅ Demo position added: TOKEN (+20% P&L, $2.50 size)")
+            self.log_message("✅ Demo position added: PEPE (+20% P&L, $2.50 size)")
             
-        # Update GUI displays
-        self.update_positions_tree()
+        # Update GUI displays (thread-safe)
+        try:
+            self.update_positions_tree()
+        except Exception as e:
+            if "main thread" not in str(e):
+                logger.error(f"❌ Position tree update failed: {e}")
+                
         self.update_portfolio_display()
         
         # Initial scan
@@ -1753,8 +2847,37 @@ class AdvancedTradingGUI:
 
 def main():
     """Main function to run the advanced trading GUI"""
+    import sys
+    
+    # Check for --auto flag
+    auto_mode = '--auto' in sys.argv
+    
     try:
         app = AdvancedTradingGUI()
+        
+        # Enable automation if --auto flag was provided
+        if auto_mode:
+            logger.info("🤖 Auto mode enabled via command line")
+            app.automation_enabled = True
+            if hasattr(app, 'automation_var'):
+                app.automation_var.set(True)
+            app.log_message("🤖 Automation enabled via --auto flag")
+            
+            # Start automated trading loop immediately
+            logger.info("🚀 Starting automated trading loop")
+            import threading
+            def start_auto_trading():
+                import time
+                time.sleep(3)  # Give GUI time to initialize
+                try:
+                    app.run_automation_cycle()  # Start automation cycle
+                    logger.info("🔄 Auto trading loop started successfully")
+                except Exception as e:
+                    logger.error(f"❌ Auto trading startup error: {e}")
+                    
+            auto_thread = threading.Thread(target=start_auto_trading, daemon=True)
+            auto_thread.start()
+            
         app.run()
     except Exception as e:
         logger.error(f"Application error: {e}")

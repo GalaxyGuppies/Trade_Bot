@@ -1,13 +1,13 @@
 """
 CoinGecko Data Provider
-Advanced market data and analytics using CoinGecko API
+Advanced market data and analytics using CoinGecko API with comprehensive list endpoints
 """
 
 import requests
 import json
 import time
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime, timedelta
 import asyncio
 import aiohttp
@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 class CoinGeckoProvider:
     """
     CoinGecko API integration for comprehensive market data and analytics
+    Includes all list endpoints for asset discovery and ID mapping
     """
     
     def __init__(self, api_key: str):
@@ -35,7 +36,7 @@ class CoinGeckoProvider:
         self.last_request_time = 0
         self.min_request_interval = 2.0  # 2 seconds between requests for demo tier
         
-        # Coin ID mapping (CoinGecko uses different IDs)
+        # Enhanced coin ID mapping (CoinGecko uses different IDs)
         self.coin_mapping = {
             'BTC-USD': 'bitcoin',
             'ETH-USD': 'ethereum', 
@@ -46,8 +47,17 @@ class CoinGeckoProvider:
             'AVAX-USD': 'avalanche-2',
             'LINK-USD': 'chainlink',
             'UNI-USD': 'uniswap',
-            'ATOM-USD': 'cosmos'
+            'ATOM-USD': 'cosmos',
+            'PEPE-USD': 'pepe',
+            'SHIB-USD': 'shiba-inu',
+            'DOGE-USD': 'dogecoin'
         }
+        
+        # Cache for coin lists to avoid repeated API calls
+        self.coins_list_cache = None
+        self.coins_list_timestamp = 0
+        self.categories_list_cache = None
+        self.exchanges_list_cache = None
         
         logger.info("CoinGecko provider initialized with Demo API key")
     
@@ -609,7 +619,577 @@ async def test_coingecko_provider():
         print(f"  {i}. {coin['name']} ({coin['symbol']}) - "
               f"Rank #{coin['market_cap_rank']} - Score: {coin['score']}")
     
-    # Test 4: Market overview
+    # =============================================================================
+    # LIST ENDPOINTS - Asset Discovery and ID Mapping
+    # =============================================================================
+    
+    async def get_coins_list(self, include_platform: bool = False) -> List[Dict]:
+        """
+        Get list of all supported coins with id, name, and symbol
+        Endpoint: /coins/list
+        
+        Args:
+            include_platform: Include platform info (contract addresses)
+            
+        Returns:
+            List of coins with id, symbol, name, and optionally platforms
+        """
+        cache_key = f"coins_list_{include_platform}"
+        
+        # Use longer cache for coin lists (4 hours)
+        if (cache_key in self.cache and 
+            time.time() - self.cache[cache_key]['timestamp'] < 14400):
+            logger.info("Using cached coins list")
+            return self.cache[cache_key]['data']
+        
+        self._rate_limit()
+        
+        try:
+            params = {}
+            if include_platform:
+                params['include_platform'] = 'true'
+            
+            url = f"{self.base_url}/coins/list"
+            response = requests.get(url, headers=self.headers, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Cache the result
+                self.cache[cache_key] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+                logger.info(f"Retrieved {len(data)} coins from list endpoint")
+                return data
+            else:
+                logger.error(f"Error fetching coins list: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching coins list: {e}")
+            return []
+    
+    async def get_new_coins_list(self) -> List[Dict]:
+        """
+        Get list of new coins listed in the last 7 days
+        Endpoint: /coins/list/new
+        
+        Returns:
+            List of new coins with activation dates
+        """
+        cache_key = "new_coins_list"
+        
+        if self._should_use_cache(cache_key):
+            logger.info("Using cached new coins list")
+            return self.cache[cache_key]['data']
+        
+        self._rate_limit()
+        
+        try:
+            url = f"{self.base_url}/coins/list/new"
+            response = requests.get(url, headers=self.headers, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Cache the result
+                self.cache[cache_key] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+                logger.info(f"Retrieved {len(data)} new coins")
+                return data
+            else:
+                logger.error(f"Error fetching new coins: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching new coins: {e}")
+            return []
+    
+    async def get_categories_list(self) -> List[Dict]:
+        """
+        Get list of coin categories
+        Endpoint: /coins/categories/list
+        
+        Returns:
+            List of categories with id and name
+        """
+        cache_key = "categories_list"
+        
+        # Use longer cache for categories (6 hours)
+        if (cache_key in self.cache and 
+            time.time() - self.cache[cache_key]['timestamp'] < 21600):
+            logger.info("Using cached categories list")
+            return self.cache[cache_key]['data']
+        
+        self._rate_limit()
+        
+        try:
+            url = f"{self.base_url}/coins/categories/list"
+            response = requests.get(url, headers=self.headers, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Cache the result
+                self.cache[cache_key] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+                logger.info(f"Retrieved {len(data)} categories")
+                return data
+            else:
+                logger.error(f"Error fetching categories: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching categories: {e}")
+            return []
+    
+    async def get_nft_list(self, order: str = "h24_volume_usd_desc", per_page: int = 100) -> List[Dict]:
+        """
+        Get list of NFT collections
+        Endpoint: /nft/list
+        
+        Args:
+            order: Sort order (h24_volume_usd_desc, h24_volume_usd_asc, market_cap_usd_desc, etc.)
+            per_page: Number of results per page (max 250)
+            
+        Returns:
+            List of NFT collections
+        """
+        cache_key = f"nft_list_{order}_{per_page}"
+        
+        if self._should_use_cache(cache_key):
+            logger.info("Using cached NFT list")
+            return self.cache[cache_key]['data']
+        
+        self._rate_limit()
+        
+        try:
+            params = {
+                'order': order,
+                'per_page': min(per_page, 250)
+            }
+            
+            url = f"{self.base_url}/nft/list"
+            response = requests.get(url, headers=self.headers, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Cache the result
+                self.cache[cache_key] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+                logger.info(f"Retrieved {len(data)} NFT collections")
+                return data
+            else:
+                logger.error(f"Error fetching NFT list: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching NFT list: {e}")
+            return []
+    
+    async def get_exchanges_list(self) -> List[Dict]:
+        """
+        Get list of exchanges
+        Endpoint: /exchanges/list
+        
+        Returns:
+            List of exchanges with id and name
+        """
+        cache_key = "exchanges_list"
+        
+        # Use longer cache for exchanges (6 hours)
+        if (cache_key in self.cache and 
+            time.time() - self.cache[cache_key]['timestamp'] < 21600):
+            logger.info("Using cached exchanges list")
+            return self.cache[cache_key]['data']
+        
+        self._rate_limit()
+        
+        try:
+            url = f"{self.base_url}/exchanges/list"
+            response = requests.get(url, headers=self.headers, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Cache the result
+                self.cache[cache_key] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+                logger.info(f"Retrieved {len(data)} exchanges")
+                return data
+            else:
+                logger.error(f"Error fetching exchanges list: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching exchanges list: {e}")
+            return []
+    
+    async def get_derivatives_exchanges_list(self) -> List[Dict]:
+        """
+        Get list of derivatives exchanges
+        Endpoint: /derivatives/exchanges/list
+        
+        Returns:
+            List of derivatives exchanges with id and name
+        """
+        cache_key = "derivatives_exchanges_list"
+        
+        # Use longer cache for derivatives exchanges (6 hours)
+        if (cache_key in self.cache and 
+            time.time() - self.cache[cache_key]['timestamp'] < 21600):
+            logger.info("Using cached derivatives exchanges list")
+            return self.cache[cache_key]['data']
+        
+        self._rate_limit()
+        
+        try:
+            url = f"{self.base_url}/derivatives/exchanges/list"
+            response = requests.get(url, headers=self.headers, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Cache the result
+                self.cache[cache_key] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+                logger.info(f"Retrieved {len(data)} derivatives exchanges")
+                return data
+            else:
+                logger.error(f"Error fetching derivatives exchanges: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching derivatives exchanges: {e}")
+            return []
+    
+    # =============================================================================
+    # CONTRACT ADDRESS LOOKUPS
+    # =============================================================================
+    
+    async def get_coin_by_contract_address(self, platform_id: str, contract_address: str) -> Dict:
+        """
+        Look up coin by contract address
+        Endpoint: /coins/{platform_id}/contract/{contract_address}
+        
+        Args:
+            platform_id: Platform identifier (e.g., 'ethereum', 'binance-smart-chain')
+            contract_address: Token contract address
+            
+        Returns:
+            Coin data including price, market cap, volume
+        """
+        cache_key = f"contract_{platform_id}_{contract_address}"
+        
+        if self._should_use_cache(cache_key):
+            logger.info(f"Using cached contract data for {contract_address}")
+            return self.cache[cache_key]['data']
+        
+        self._rate_limit()
+        
+        try:
+            url = f"{self.base_url}/coins/{platform_id}/contract/{contract_address}"
+            response = requests.get(url, headers=self.headers, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Cache the result
+                self.cache[cache_key] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+                logger.info(f"Retrieved contract data for {contract_address}")
+                return data
+            else:
+                logger.error(f"Error fetching contract data: {response.status_code}")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Error fetching contract data: {e}")
+            return {}
+    
+    async def search_coins(self, query: str) -> Dict:
+        """
+        Search for coins, categories, and markets
+        Endpoint: /search
+        
+        Args:
+            query: Search query string
+            
+        Returns:
+            Search results with coins, categories, markets
+        """
+        cache_key = f"search_{query.lower()}"
+        
+        if self._should_use_cache(cache_key):
+            logger.info(f"Using cached search results for {query}")
+            return self.cache[cache_key]['data']
+        
+        self._rate_limit()
+        
+        try:
+            params = {'query': query}
+            url = f"{self.base_url}/search"
+            response = requests.get(url, headers=self.headers, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Cache the result
+                self.cache[cache_key] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+                logger.info(f"Search returned {len(data.get('coins', []))} coins for '{query}'")
+                return data
+            else:
+                logger.error(f"Error searching: {response.status_code}")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Error searching: {e}")
+            return {}
+    
+    # =============================================================================
+    # HELPER METHODS FOR LIST ENDPOINTS
+    # =============================================================================
+    
+    async def find_coin_id_by_symbol(self, symbol: str) -> Optional[str]:
+        """
+        Find CoinGecko coin ID by symbol using the coins list
+        
+        Args:
+            symbol: Coin symbol (e.g., 'BTC', 'ETH')
+            
+        Returns:
+            CoinGecko coin ID or None if not found
+        """
+        coins_list = await self.get_coins_list()
+        
+        symbol_upper = symbol.upper()
+        for coin in coins_list:
+            if coin['symbol'].upper() == symbol_upper:
+                return coin['id']
+        
+        # If not found, try search
+        search_results = await self.search_coins(symbol)
+        coins = search_results.get('coins', [])
+        
+        for coin in coins:
+            if coin['symbol'].upper() == symbol_upper:
+                return coin['id']
+        
+        return None
+    
+    async def find_coin_id_by_name(self, name: str) -> Optional[str]:
+        """
+        Find CoinGecko coin ID by name using the coins list
+        
+        Args:
+            name: Coin name (e.g., 'Bitcoin', 'Ethereum')
+            
+        Returns:
+            CoinGecko coin ID or None if not found
+        """
+        coins_list = await self.get_coins_list()
+        
+        name_lower = name.lower()
+        for coin in coins_list:
+            if coin['name'].lower() == name_lower:
+                return coin['id']
+        
+        # If not found, try search
+        search_results = await self.search_coins(name)
+        coins = search_results.get('coins', [])
+        
+        for coin in coins:
+            if coin['name'].lower() == name_lower:
+                return coin['id']
+        
+        return None
+    
+    async def get_contract_platforms(self) -> List[str]:
+        """
+        Get list of supported platforms for contract address lookups
+        
+        Returns:
+            List of platform IDs (e.g., 'ethereum', 'binance-smart-chain')
+        """
+        # Common platforms supported by CoinGecko
+        return [
+            'ethereum',
+            'binance-smart-chain', 
+            'polygon-pos',
+            'avalanche',
+            'arbitrum-one',
+            'optimistic-ethereum',
+            'fantom',
+            'harmony-shard-0',
+            'xdai',
+            'solana',
+            'cardano',
+            'polkadot',
+            'kusama',
+            'moonbeam',
+            'moonriver'
+        ]
+    
+    async def discover_low_cap_gems(self, 
+                                   max_market_cap: float = 50_000_000,
+                                   min_volume: float = 100_000,
+                                   min_age_days: int = 30) -> List[Dict]:
+        """
+        Discover low market cap gems using list endpoints
+        
+        Args:
+            max_market_cap: Maximum market cap in USD
+            min_volume: Minimum 24h volume in USD
+            min_age_days: Minimum age in days
+            
+        Returns:
+            List of potential low cap opportunities
+        """
+        logger.info(f"Discovering low cap gems (max mcap: ${max_market_cap:,.0f})")
+        
+        # Get trending coins first
+        trending_data = await self.get_trending_coins()
+        opportunities = []
+        
+        for trend_coin in trending_data.get('coins', [])[:20]:  # Top 20 trending
+            coin_id = trend_coin['item']['id']
+            
+            # Get detailed data
+            coin_data = await self.get_coin_details(coin_id)
+            
+            if coin_data:
+                market_data = coin_data.get('market_data', {})
+                market_cap = market_data.get('market_cap', {}).get('usd', 0)
+                volume_24h = market_data.get('total_volume', {}).get('usd', 0)
+                
+                # Check if it meets our criteria
+                if (market_cap > 0 and market_cap <= max_market_cap and
+                    volume_24h >= min_volume):
+                    
+                    opportunities.append({
+                        'id': coin_id,
+                        'symbol': coin_data.get('symbol', '').upper(),
+                        'name': coin_data.get('name', ''),
+                        'market_cap': market_cap,
+                        'volume_24h': volume_24h,
+                        'price_change_24h': market_data.get('price_change_percentage_24h', 0),
+                        'market_cap_rank': market_data.get('market_cap_rank'),
+                        'trending_rank': trend_coin['item']['market_cap_rank']
+                    })
+        
+        # Sort by volume (liquidity proxy)
+        opportunities.sort(key=lambda x: x['volume_24h'], reverse=True)
+        
+        logger.info(f"Found {len(opportunities)} low cap opportunities")
+        return opportunities[:10]  # Return top 10
+    
+    # Test 4: List Endpoints
+    print(f"\n📋 Testing List Endpoints...")
+    
+    # Test coins list
+    coins_list = await provider.get_coins_list()
+    if coins_list:
+        print(f"  Total coins available: {len(coins_list)}")
+        print(f"  Sample coins: {[coin['symbol'].upper() for coin in coins_list[:5]]}")
+    
+    # Test new coins
+    new_coins = await provider.get_new_coins_list()
+    if new_coins:
+        print(f"  New coins (last 7 days): {len(new_coins)}")
+        if len(new_coins) > 0:
+            print(f"  Latest: {new_coins[0].get('name', 'Unknown')} ({new_coins[0].get('symbol', '').upper()})")
+    
+    # Test categories
+    categories = await provider.get_categories_list()
+    if categories:
+        print(f"  Total categories: {len(categories)}")
+        print(f"  Sample categories: {[cat['name'] for cat in categories[:3]]}")
+    
+    # Test exchanges
+    exchanges = await provider.get_exchanges_list()
+    if exchanges:
+        print(f"  Total exchanges: {len(exchanges)}")
+        print(f"  Sample exchanges: {[ex['name'] for ex in exchanges[:3]]}")
+    
+    # Test derivatives exchanges
+    derivatives = await provider.get_derivatives_exchanges_list()
+    if derivatives:
+        print(f"  Derivatives exchanges: {len(derivatives)}")
+    
+    # Test 5: Contract Address Lookup
+    print(f"\n🔍 Testing Contract Address Lookup...")
+    
+    # Test with a known contract (USDC on Ethereum)
+    usdc_contract = "0xa0b86a33e6441e67ce04b3bd75b0c9faabadea13"  # USDC
+    contract_data = await provider.get_coin_by_contract_address("ethereum", usdc_contract)
+    if contract_data:
+        print(f"  Contract lookup successful: {contract_data.get('name', 'Unknown')}")
+        print(f"  Symbol: {contract_data.get('symbol', '').upper()}")
+    
+    # Test 6: Search functionality
+    print(f"\n🔍 Testing Search...")
+    search_results = await provider.search_coins("Bitcoin")
+    if search_results:
+        coins = search_results.get('coins', [])
+        print(f"  Search results for 'Bitcoin': {len(coins)} coins")
+        if coins:
+            print(f"  Top result: {coins[0]['name']} ({coins[0]['symbol']})")
+    
+    # Test 7: Low Cap Gem Discovery
+    print(f"\n💎 Testing Low Cap Gem Discovery...")
+    gems = await provider.discover_low_cap_gems(
+        max_market_cap=10_000_000,  # $10M max
+        min_volume=50_000,          # $50K min volume
+        min_age_days=7
+    )
+    
+    if gems:
+        print(f"  Found {len(gems)} potential gems:")
+        for gem in gems[:3]:  # Show top 3
+            print(f"    {gem['symbol']}: ${gem['market_cap']:,.0f} mcap, "
+                  f"${gem['volume_24h']:,.0f} volume, {gem['price_change_24h']:+.1f}%")
+    
+    # Test 8: Helper methods
+    print(f"\n🔧 Testing Helper Methods...")
+    
+    # Find coin ID by symbol
+    btc_id = await provider.find_coin_id_by_symbol("BTC")
+    print(f"  BTC coin ID: {btc_id}")
+    
+    # Find coin ID by name
+    ethereum_id = await provider.find_coin_id_by_name("Ethereum")
+    print(f"  Ethereum coin ID: {ethereum_id}")
+    
+    # Get supported platforms
+    platforms = await provider.get_contract_platforms()
+    print(f"  Supported platforms: {len(platforms)} ({', '.join(platforms[:5])}...)")
+    
+    # Test 9: Market overview
     print(f"\n🌍 Global Market Overview...")
     overview = await provider.get_market_overview()
     

@@ -50,13 +50,14 @@ class PositionSizing:
     volatility_multiplier: float = 1.2  # Increase allocation for higher volatility
 
 class HighVolatilityLowCapStrategy:
-    """Strategy targeting high volatility low market cap tokens"""
+    """Enhanced strategy targeting high volatility low market cap tokens with sentiment analysis"""
     
     def __init__(self, 
                  small_fund_usd: float = 1000.0,  # Small allocation for high risk trades
                  coinmarketcap_api_key: str = None,
                  coingecko_api_key: str = None,
                  dappradar_api_key: str = None,
+                 sentiment_collector = None,  # Enhanced with sentiment analysis
                  min_market_cap: float = 100000.0,   # $100K minimum
                  max_market_cap: float = 50000000.0, # $50M maximum
                  min_daily_volume: float = 100000.0,  # $100K minimum daily volume
@@ -66,6 +67,7 @@ class HighVolatilityLowCapStrategy:
         self.coinmarketcap_api_key = coinmarketcap_api_key
         self.coingecko_api_key = coingecko_api_key
         self.dappradar_api_key = dappradar_api_key
+        self.sentiment_collector = sentiment_collector  # Enhanced with sentiment
         
         # Filtering criteria
         self.min_market_cap = min_market_cap
@@ -84,10 +86,12 @@ class HighVolatilityLowCapStrategy:
         # Active positions tracking
         self.active_positions: Dict[str, Dict] = {}
         
-        logger.info(f"Initialized High Volatility Low Cap Strategy with ${small_fund_usd} allocation")
+        logger.info(f"Initialized Enhanced High Volatility Low Cap Strategy with ${small_fund_usd} allocation")
+        if sentiment_collector:
+            logger.info("✅ Social sentiment analysis enabled")
     
-    async def scan_low_cap_opportunities(self) -> List[LowCapCandidate]:
-        """Scan for low market cap trading opportunities"""
+    async def scan_low_cap_opportunities_with_sentiment(self) -> List[LowCapCandidate]:
+        """Enhanced scan for low market cap opportunities with sentiment analysis"""
         candidates = []
         
         try:
@@ -99,19 +103,63 @@ class HighVolatilityLowCapStrategy:
             cmc_candidates = await self._get_cmc_trending_low_caps()
             candidates.extend(cmc_candidates)
             
+            # Enhanced with sentiment analysis
+            if self.sentiment_collector and candidates:
+                logger.info(f"🐦 Analyzing sentiment for {len(candidates)} candidates...")
+                
+                # Extract symbols for sentiment analysis
+                symbols = [candidate.symbol for candidate in candidates[:20]]  # Top 20 for sentiment
+                
+                # Get combined sentiment data
+                sentiment_data = await self.sentiment_collector.get_combined_sentiment(
+                    symbols=symbols,
+                    hours_back=24
+                )
+                
+                # Enhance candidates with sentiment scores
+                for candidate in candidates:
+                    sentiment_info = sentiment_data.get(candidate.symbol, {})
+                    
+                    # Add sentiment to candidate
+                    candidate.sentiment_score = sentiment_info.get('sentiment_score', 0.0)
+                    candidate.sentiment_label = sentiment_info.get('sentiment_label', 'neutral')
+                    candidate.sentiment_confidence = sentiment_info.get('confidence', 0.0)
+                    
+                    # Adjust scoring based on sentiment
+                    if candidate.sentiment_label == 'bullish' and candidate.sentiment_confidence > 0.5:
+                        candidate.score *= 1.3  # Boost score for bullish sentiment
+                        logger.info(f"   📈 {candidate.symbol}: Bullish sentiment boost (score: {candidate.score:.3f})")
+                    elif candidate.sentiment_label == 'bearish' and candidate.sentiment_confidence > 0.5:
+                        candidate.score *= 0.7  # Reduce score for bearish sentiment  
+                        logger.info(f"   📉 {candidate.symbol}: Bearish sentiment penalty (score: {candidate.score:.3f})")
+                
+                logger.info("✅ Sentiment analysis integration completed")
+            
+        except Exception as e:
+            logger.error(f"Error in enhanced opportunity scan: {e}")
+        
+        # Sort by enhanced score (now includes sentiment)
+        candidates.sort(key=lambda x: x.score, reverse=True)
+        
+        return candidates[:50]  # Return top 50
+    
+    async def scan_low_cap_opportunities(self) -> List[LowCapCandidate]:
+        """Scan for low market cap trading opportunities (legacy method, calls enhanced version)"""
+        return await self.scan_low_cap_opportunities_with_sentiment()
+    
+    async def _get_additional_candidates(self) -> List[LowCapCandidate]:
+        """Get additional candidates from various sources"""
+        candidates = []
+        
+        try:
             # Get DeFi tokens from DappRadar
             defi_candidates = await self._get_dappradar_defi_tokens()
             candidates.extend(defi_candidates)
             
         except Exception as e:
-            logger.error(f"Error scanning opportunities: {e}")
+            logger.error(f"Error getting additional candidates: {e}")
         
-        # Remove duplicates and filter
-        unique_candidates = self._deduplicate_candidates(candidates)
-        filtered_candidates = self._filter_candidates(unique_candidates)
-        
-        logger.info(f"Found {len(filtered_candidates)} low cap candidates")
-        return filtered_candidates
+        return candidates
     
     async def _get_coingecko_low_caps(self) -> List[LowCapCandidate]:
         """Get low market cap tokens from CoinGecko"""

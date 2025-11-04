@@ -1,64 +1,42 @@
-# Core web framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-websockets==12.0
+# Powerhouse Trading System Dependencies
 
-# Database and caching
-sqlalchemy==2.0.23
-alembic==1.12.1
-psycopg2-binary==2.9.9
-redis==5.0.1
-timescaledb==0.0.4
+# Core Framework
+# asyncio and logging are built-in modules
 
-# Exchange APIs and WebSocket
-ccxt==4.1.48
-python-binance==1.0.19
-coinbase-pro==1.1.4
-websocket-client==1.6.4
+# Data Processing
+pandas>=1.5.0
+numpy>=1.24.0
 
-# Social media APIs
-tweepy==4.15.0
-praw==7.7.1
-telethon==1.33.1
+# Machine Learning
+scikit-learn>=1.3.0
+joblib>=1.2.0
 
-# ML and Data Science
-scikit-learn==1.3.2
-xgboost==2.0.1
-lightgbm==4.1.0
-transformers==4.35.2
-torch==2.1.1
-tokenizers==0.15.0
-pandas==2.1.3
-numpy==1.25.2
-scipy==1.11.4
+# Web & API
+aiohttp>=3.8.0
+requests>=2.28.0
+httpx>=0.24.0
 
-# Technical Analysis
-ta==0.10.2
-pandas-ta==0.3.14b0
+# Social Media APIs  
+praw>=7.6.0  # Reddit API
+tweepy>=4.14.0  # Twitter API
 
-# On-chain data
-web3==6.12.0
-solders==0.21.0
-solana==0.34.0
+# Text Processing
+textblob>=0.17.0
+regex>=2023.0.0
 
-# News and sentiment
-feedparser==6.0.10
-newspaper3k==0.2.8
-beautifulsoup4==4.12.2
-requests==2.31.0
+# Crypto & Blockchain (optional)
+# web3>=6.0.0  # Uncomment if needed
+# solders>=0.25.0  # Uncomment if needed
 
-# Monitoring and observability
-prometheus-client==0.19.0
-structlog==23.2.0
+# Database and GUI (built-in modules)
+# sqlite3 is built-in
+# tkinter is built-in
+customtkinter>=5.2.0
 
-# Async and utilities
-asyncio==3.4.3
-aioredis==2.0.1
-httpx==0.25.2
-pydantic==2.5.0
-python-dotenv==1.0.0
-schedule==1.2.0
+# Configuration
+pyyaml>=6.0
+python-dotenv>=1.0.0
 
-# Testing
-pytest==7.4.3
-pytest-asyncio==0.21.1
+# Development & Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
