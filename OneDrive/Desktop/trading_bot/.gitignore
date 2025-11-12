@@ -27,7 +27,7 @@ MANIFEST
 
 # Virtual Environment
 pyvenv.cfg
-Scripts/
+/Scripts/
 Include/
 Lib/
 share/
