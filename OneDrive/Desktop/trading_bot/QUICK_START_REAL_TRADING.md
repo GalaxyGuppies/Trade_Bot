@@ -1,3 +1,54 @@
+PS C:\Users\tfair\OneDrive\Desktop\trading_bot> # Check public IP (should NOT be your ISP/home IP)
+>> python -c "import requests; print(requests.get('https://api.ipify.org', timeout=10).text)"
+>>
+>> # Windows resolver: should now return A records (not just SOA)
+>> Resolve-DnsName quote-api.jup.ag -Type A
+>>
+>> # Python DNS test (should show ?)
+>> python test_dns.py
+>>
+>> # Optional: direct Jupiter connectivity
+>> python test_jupiter_advanced.py
+98.3.79.206
+
+Name                        Type TTL   Section    PrimaryServer               NameAdministrator           SerialNumber
+----                        ---- ---   -------    -------------               -----------------           ------------
+jup.ag                      SOA  1306  Authority  ali.ns.cloudflare.com       dns.cloudflare.com          2387734960
+🔍 Testing DNS resolution for Jupiter API...
+============================================================
+
+1️⃣ DNS Lookup Test:
+❌ DNS lookup failed: [Errno 11001] getaddrinfo failed
+   This is why real trading fails!
+
+2️⃣ Testing with alternative DNS (8.8.8.8):
+   To fix, run PowerShell as Administrator:
+   netsh interface ip set dns 'Wi-Fi' static 8.8.8.8
+
+3️⃣ Testing general internet connectivity:
+✅ Internet works: Google returned 200
+
+============================================================
+📝 Summary:
+   Paper trading = Works offline (no network needed)
+   Real trading = Requires Jupiter API (network required)
+
+   If DNS fails above, real trading cannot work!
+🧪 Testing Jupiter API Connectivity
+============================================================
+
+1️⃣ Testing with httpx (direct)...
+❌ Error: [Errno 11001] getaddrinfo failed
+
+2️⃣ Testing with Cloudflare DoH...
+❌ No DNS answer received
+
+============================================================
+📝 If Method 1 works, real trading will work!
+   If both fail, the network is blocking crypto APIs completely.
+
+
+PS C:\Users\tfair\OneDrive\Desktop\trading_bot>
 # 🚀 Quick Start: Real Trading
 
 ## Current Status

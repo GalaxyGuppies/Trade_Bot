@@ -376,8 +376,8 @@ class AutoTrader:
             trade_value = quantity * current_price
             
             # MINIMUM TRADE VALUE CHECK (Jupiter requires minimum ~$0.10)
-            # 🎯 MINIMUM TRADE SIZE: $5.00 (Eliminates 71.2% dust trades)
-            min_trade_value_usd = 5.00  # CRITICAL: Increased from $0.01 to prevent dust trades
+            # 🎯 MINIMUM TRADE SIZE: $0.50 (Allows small positions for testing)
+            min_trade_value_usd = 0.50  # Lowered from $5 to allow current positions to exit
             if trade_value < min_trade_value_usd:
                 self.gui.log_message(f"⚠️ {token}: Trade value ${trade_value:.2f} below minimum ${min_trade_value_usd} - SKIPPING")
                 return False
@@ -729,16 +729,19 @@ class TradingBotGUI:
         # Tab 1: Dashboard
         self.setup_dashboard_tab()
         
-        # Tab 2: Charts
+        # Tab 2: Whale Discovery 🐋 NEW TAB
+        self.setup_whale_discovery_tab()
+        
+        # Tab 3: Charts
         self.setup_charts_tab()
         
-        # Tab 3: Trading
+        # Tab 4: Trading
         self.setup_trading_tab()
         
-        # Tab 4: History
+        # Tab 5: History
         self.setup_history_tab()
         
-        # Tab 5: Analytics
+        # Tab 6: Analytics
         self.setup_analytics_tab()
     
     def setup_dashboard_tab(self):
@@ -946,6 +949,263 @@ class TradingBotGUI:
         card_frame.indicator_label = indicator_label
         
         return card_frame
+    
+    def _update_token_dropdowns(self):
+        """Update all token dropdown menus when new tokens are added"""
+        try:
+            # Update chart token dropdown
+            if hasattr(self, 'chart_token_var'):
+                chart_combo = None
+                # Find the combobox widget
+                for widget in self.notebook.winfo_children():
+                    for child in widget.winfo_children():
+                        if isinstance(child, ttk.Combobox):
+                            chart_combo = child
+                            break
+                if chart_combo:
+                    chart_combo['values'] = self.target_tokens
+            
+            # Update trade token dropdown
+            if hasattr(self, 'trade_token_var'):
+                # Similar update for trade dropdown
+                pass
+                
+            self.log_message(f"📊 Updated token list: {len(self.target_tokens)} tokens tracked")
+        except Exception as e:
+            self.log_message(f"⚠️ Error updating dropdowns: {e}")
+    
+    def setup_whale_discovery_tab(self):
+        """Setup whale discovery tab - monitors whale wallets and discovered tokens"""
+        whale_tab = ttk.Frame(self.notebook)
+        self.notebook.add(whale_tab, text="🐋 Whale Discovery")
+        
+        # Title
+        title_frame = ttk.Frame(whale_tab)
+        title_frame.pack(fill=tk.X, pady=10, padx=10)
+        
+        ttk.Label(title_frame, text="🐋 WHALE WALLET DISCOVERY SYSTEM", 
+                 font=('Arial', 16, 'bold')).pack(anchor=tk.W)
+        
+        ttk.Label(title_frame, text="Monitoring 20+ whale wallets for profitable token discoveries", 
+                 font=('Arial', 10), foreground='gray').pack(anchor=tk.W, pady=5)
+        
+        # Main container with 2 columns
+        main_container = ttk.Frame(whale_tab)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Left column - Whale Wallet Status
+        left_frame = ttk.Frame(main_container)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        
+        # Whale wallet status panel
+        whale_status_frame = ttk.LabelFrame(left_frame, text="📡 Whale Wallet Status (Live)", padding=10)
+        whale_status_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Scrollable whale status list
+        whale_canvas = tk.Canvas(whale_status_frame, height=400)
+        whale_scrollbar = ttk.Scrollbar(whale_status_frame, orient="vertical", command=whale_canvas.yview)
+        self.whale_status_container = ttk.Frame(whale_canvas)
+        
+        self.whale_status_container.bind(
+            "<Configure>",
+            lambda e: whale_canvas.configure(scrollregion=whale_canvas.bbox("all"))
+        )
+        
+        whale_canvas.create_window((0, 0), window=self.whale_status_container, anchor="nw")
+        whale_canvas.configure(yscrollcommand=whale_scrollbar.set)
+        
+        whale_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        whale_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Initialize whale status widgets
+        self.whale_status_widgets = {}
+        
+        if self.whale_tracker:
+            for wallet_address, whale_info in list(self.whale_tracker.WHALE_WALLETS.items())[:20]:
+                whale_row = ttk.Frame(self.whale_status_container)
+                whale_row.pack(fill=tk.X, pady=3, padx=5)
+                
+                # Whale name and tier
+                name_label = ttk.Label(whale_row, 
+                                      text=f"{whale_info['name']} [{whale_info['tier'].upper()}]",
+                                      font=('Arial', 9, 'bold'))
+                name_label.pack(side=tk.LEFT)
+                
+                # Status indicator
+                status_label = ttk.Label(whale_row, text="⏳ Checking...", foreground="orange")
+                status_label.pack(side=tk.RIGHT)
+                
+                # Transaction count
+                tx_label = ttk.Label(whale_row, text="0 tx", foreground="gray", font=('Arial', 8))
+                tx_label.pack(side=tk.RIGHT, padx=10)
+                
+                self.whale_status_widgets[wallet_address] = {
+                    'status': status_label,
+                    'tx_count': tx_label,
+                    'name': name_label
+                }
+        
+        # Scan statistics
+        stats_frame = ttk.LabelFrame(left_frame, text="📊 Scan Statistics", padding=10)
+        stats_frame.pack(fill=tk.X, pady=5)
+        
+        self.whale_scan_count_label = ttk.Label(stats_frame, text="Total Scans: 0", font=('Arial', 10))
+        self.whale_scan_count_label.pack(anchor=tk.W, pady=2)
+        
+        self.whale_tx_found_label = ttk.Label(stats_frame, text="Transactions Found: 0", font=('Arial', 10))
+        self.whale_tx_found_label.pack(anchor=tk.W, pady=2)
+        
+        self.whale_signals_label = ttk.Label(stats_frame, text="Signals Detected: 0", font=('Arial', 10))
+        self.whale_signals_label.pack(anchor=tk.W, pady=2)
+        
+        self.whale_last_scan_label = ttk.Label(stats_frame, text="Last Scan: Never", 
+                                              font=('Arial', 9), foreground='gray')
+        self.whale_last_scan_label.pack(anchor=tk.W, pady=2)
+        
+        # Right column - Discovered Tokens & Activity
+        right_frame = ttk.Frame(main_container)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+        
+        # Discovered tokens panel
+        discovered_frame = ttk.LabelFrame(right_frame, text="🎯 Discovered Tokens", padding=10)
+        discovered_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Discovered tokens table
+        disc_columns = ('Token', 'Whales', 'Action', 'Confidence', 'Status')
+        self.discovered_tree = ttk.Treeview(discovered_frame, columns=disc_columns, 
+                                           show='headings', height=10)
+        
+        self.discovered_tree.heading('Token', text='Token')
+        self.discovered_tree.heading('Whales', text='Whale Count')
+        self.discovered_tree.heading('Action', text='Signal')
+        self.discovered_tree.heading('Confidence', text='Confidence')
+        self.discovered_tree.heading('Status', text='Tracking')
+        
+        self.discovered_tree.column('Token', width=100)
+        self.discovered_tree.column('Whales', width=90)
+        self.discovered_tree.column('Action', width=70)
+        self.discovered_tree.column('Confidence', width=90)
+        self.discovered_tree.column('Status', width=90)
+        
+        disc_scrollbar = ttk.Scrollbar(discovered_frame, orient=tk.VERTICAL, 
+                                      command=self.discovered_tree.yview)
+        self.discovered_tree.configure(yscrollcommand=disc_scrollbar.set)
+        
+        self.discovered_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        disc_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Activity feed
+        activity_frame = ttk.LabelFrame(right_frame, text="📡 Recent Whale Activity", padding=10)
+        activity_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Activity log (text widget)
+        self.whale_activity_text = tk.Text(activity_frame, height=12, wrap=tk.WORD, 
+                                          font=('Consolas', 9))
+        activity_scrollbar = ttk.Scrollbar(activity_frame, orient=tk.VERTICAL, 
+                                         command=self.whale_activity_text.yview)
+        self.whale_activity_text.configure(yscrollcommand=activity_scrollbar.set)
+        
+        self.whale_activity_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        activity_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Add initial message
+        self.whale_activity_text.insert('1.0', "🐋 Waiting for first whale scan...\n")
+        self.whale_activity_text.config(state=tk.DISABLED)
+        
+        # Manual scan button
+        button_frame = ttk.Frame(whale_tab)
+        button_frame.pack(fill=tk.X, pady=10, padx=10)
+        
+        ttk.Button(button_frame, text="🔄 Force Scan Now", 
+                  command=self.manual_whale_scan).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(button_frame, text="🧹 Clear Activity Log", 
+                  command=self.clear_whale_activity).pack(side=tk.LEFT, padx=5)
+        
+        # Initialize scan counter
+        self.whale_scan_counter = 0
+        self.whale_total_tx = 0
+        self.whale_total_signals = 0
+    
+    def manual_whale_scan(self):
+        """Manually trigger whale scan"""
+        if hasattr(self, 'auto_trader') and self.auto_trader:
+            self.log_message("🔍 Manually triggering whale scan...")
+            # Schedule async scan
+            asyncio.create_task(self.auto_trader.scan_whale_activity_all_tokens())
+        else:
+            self.log_message("⚠️ Auto trader not initialized")
+    
+    def clear_whale_activity(self):
+        """Clear whale activity log"""
+        self.whale_activity_text.config(state=tk.NORMAL)
+        self.whale_activity_text.delete('1.0', tk.END)
+        self.whale_activity_text.insert('1.0', "🧹 Activity log cleared\n")
+        self.whale_activity_text.config(state=tk.DISABLED)
+    
+    def update_whale_status(self, wallet_address, status, tx_count=0):
+        """Update whale wallet status in GUI"""
+        if wallet_address in self.whale_status_widgets:
+            widgets = self.whale_status_widgets[wallet_address]
+            
+            if status == 'active':
+                widgets['status'].config(text="✅ Active", foreground="green")
+            elif status == 'inactive':
+                widgets['status'].config(text="⚠️ No Activity", foreground="orange")
+            elif status == 'error':
+                widgets['status'].config(text="❌ Error", foreground="red")
+            
+            widgets['tx_count'].config(text=f"{tx_count} tx")
+    
+    def update_whale_activity_feed(self, message):
+        """Add message to whale activity feed"""
+        if hasattr(self, 'whale_activity_text'):
+            self.whale_activity_text.config(state=tk.NORMAL)
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.whale_activity_text.insert('1.0', f"[{timestamp}] {message}\n")
+            # Keep only last 100 lines
+            lines = self.whale_activity_text.get('1.0', tk.END).split('\n')
+            if len(lines) > 100:
+                self.whale_activity_text.delete(f'{len(lines)-100}.0', tk.END)
+            self.whale_activity_text.config(state=tk.DISABLED)
+    
+    def update_discovered_tokens(self, signals):
+        """Update discovered tokens table"""
+        if not hasattr(self, 'discovered_tree'):
+            return
+        
+        # Clear existing
+        for item in self.discovered_tree.get_children():
+            self.discovered_tree.delete(item)
+        
+        # Group by token
+        token_data = {}
+        for signal in signals:
+            token = signal['token']
+            if token not in token_data:
+                token_data[token] = {
+                    'whales': set(),
+                    'actions': [],
+                    'confidences': []
+                }
+            token_data[token]['whales'].add(signal['whale'])
+            token_data[token]['actions'].append(signal['action'])
+            token_data[token]['confidences'].append(signal['confidence'])
+        
+        # Populate table
+        for token, data in token_data.items():
+            whale_count = len(data['whales'])
+            action = max(set(data['actions']), key=data['actions'].count)  # Most common action
+            avg_confidence = sum(data['confidences']) / len(data['confidences'])
+            is_tracked = "✅ YES" if token in self.target_tokens else "❌ NO"
+            
+            self.discovered_tree.insert('', 'end', values=(
+                token,
+                whale_count,
+                action,
+                f"{avg_confidence:.1%}",
+                is_tracked
+            ))
     
     def setup_charts_tab(self):
         """Setup charts tab with real-time price charts"""
@@ -1418,7 +1678,11 @@ class TradingBotGUI:
         NOW WITH MULTI-WHALE CONSENSUS DETECTION + FULL DISCOVERY MODE
         """
         try:
+            self.log_message(f"🔍 Checking whale signals for {token}...")
+            self.log_message(f"   Whale tracker status: {type(self.whale_tracker).__name__ if self.whale_tracker else 'None'}")
+            
             if not self.whale_tracker:
+                self.log_message(f"   Initializing whale tracker...")
                 # Initialize whale tracker on first use
                 rpc_url = self.config.get('solana', {}).get('rpc_url', 'https://api.mainnet-beta.solana.com')
                 self.whale_tracker = WhaleWalletTracker(rpc_url)
@@ -2486,9 +2750,171 @@ class TradingBotGUI:
             self.log_message(f"❌ Error analyzing {symbol}: {e}")
             return None
     
+    async def scan_whale_activity_all_tokens(self):
+        """
+        FULL DISCOVERY MODE: Scan ALL whale activity across entire Solana blockchain
+        This runs ONCE per scan cycle to discover ANY token whales are trading
+        Results are logged and cached for individual token checks
+        """
+        try:
+            # Initialize whale tracker if needed
+            if not self.whale_tracker:
+                rpc_url = self.config.get('solana', {}).get('rpc_url', 'https://api.mainnet-beta.solana.com')
+                self.whale_tracker = WhaleWalletTracker(rpc_url)
+                whale_count = len(self.whale_tracker.WHALE_WALLETS)
+                self.log_message(f"🐋 Whale tracker initialized with {whale_count} smart-money wallets")
+                self.log_message(f"🔍 FULL DISCOVERY MODE: Scanning for ANY token whales buy!")
+            
+            # Update GUI scan counter
+            if hasattr(self, 'whale_scan_counter'):
+                self.whale_scan_counter += 1
+                self.root.after(0, lambda: self.whale_scan_count_label.config(
+                    text=f"Total Scans: {self.whale_scan_counter}"
+                ))
+                self.root.after(0, lambda: self.whale_last_scan_label.config(
+                    text=f"Last Scan: {datetime.now().strftime('%H:%M:%S')}"
+                ))
+            
+            self.log_message("🔍 Scanning whale activity across ALL tokens...")
+            self.update_whale_activity_feed("🔍 Starting full whale scan...")
+            
+            # Scan for ANY token (tracked_tokens=None enables full discovery)
+            signals = await self.whale_tracker.scan_whale_activity(
+                tracked_tokens=None,  # None = discover ANY token
+                lookback_minutes=120,  # 2 hours to show historical activity
+                max_whales=19,  # Check all whales
+                discovery_mode=True  # Enable full discovery
+            )
+            
+            # Update GUI with results
+            if hasattr(self, 'whale_total_signals'):
+                self.whale_total_signals += len(signals) if signals else 0
+                self.root.after(0, lambda: self.whale_signals_label.config(
+                    text=f"Signals Detected: {self.whale_total_signals}"
+                ))
+            
+            # Debug: Show scan results
+            if not signals:
+                self.log_message("   ⚠️ No whale activity detected in last 2 hours")
+                self.log_message(f"   Checked {len(self.whale_tracker.WHALE_WALLETS)} whale wallets")
+                self.log_message("   This could mean:")
+                self.log_message("      • Whale wallets haven't traded recently")
+                self.log_message("      • Wallet addresses may be invalid/inactive")
+                self.log_message("      • RPC connection issues")
+                self.update_whale_activity_feed("⚠️ No whale activity detected")
+                return
+            
+            # Log ALL discovered whale trades
+            self.log_message(f"🐋 Discovered {len(signals)} whale trade(s):")
+            self.update_whale_activity_feed(f"🐋 Found {len(signals)} whale signals!")
+            
+            # Update GUI discovered tokens table
+            self.root.after(0, lambda: self.update_discovered_tokens(signals))
+            
+            # Group by token for cleaner display
+            from collections import defaultdict
+            tokens_traded = defaultdict(list)
+            for sig in signals:
+                tokens_traded[sig['token']].append(sig)
+            
+            # Display grouped by token
+            for token, token_signals in list(tokens_traded.items())[:10]:  # Show top 10 tokens
+                # Calculate aggregate data
+                buy_count = sum(1 for s in token_signals if s['action'] == 'BUY')
+                sell_count = sum(1 for s in token_signals if s['action'] == 'SELL')
+                whales = [s['whale_name'] for s in token_signals]
+                
+                # Get token metadata if available
+                sample_signal = token_signals[0]
+                liquidity = sample_signal.get('liquidity_usd', 0)
+                volume = sample_signal.get('volume_24h', 0)
+                
+                action_str = f"BUY×{buy_count}" if buy_count > 0 else ""
+                if sell_count > 0:
+                    action_str += f", SELL×{sell_count}" if action_str else f"SELL×{sell_count}"
+                
+                self.log_message(f"   {token}: {action_str} by {len(whales)} whale(s)")
+                self.log_message(f"      Liquidity: ${liquidity:,.0f} | Volume: ${volume:,.0f}")
+                self.log_message(f"      Whales: {', '.join(whales[:3])}")
+                
+                # Update activity feed
+                self.update_whale_activity_feed(f"{token}: {action_str} by {', '.join(whales[:2])}")
+            
+            if len(tokens_traded) > 10:
+                self.log_message(f"   ... and {len(tokens_traded) - 10} more tokens")
+            
+            # Check for multi-whale consensus
+            consensus_data = self.whale_tracker.detect_multi_whale_consensus(signals, lookback_minutes=30)
+            priority_signals = self.whale_tracker.get_priority_signals(consensus_data, min_whales=2)
+            
+            if priority_signals:
+                self.log_message(f"🚨 MULTI-WHALE CONSENSUS DETECTED:")
+                self.update_whale_activity_feed(f"🚨 {len(priority_signals)} consensus signals!")
+                
+                for ps in priority_signals[:5]:  # Show top 5 consensus signals
+                    self.log_message(f"   {ps['token']}: {ps['whale_count']} whales {ps['action']}")
+                    self.log_message(f"      Priority: {ps['priority_score']:.1f} | Win Rate: {ps['avg_win_rate']:.0%}")
+                    
+                    # 🎯 AUTO-ADD CONSENSUS BUY TOKENS TO TRACKING LIST
+                    if ps['action'] == 'BUY' and ps['token'] not in self.target_tokens:
+                        # Verify token meets safety thresholds
+                        token_data = next((s for s in tokens_traded[ps['token']] if s.get('liquidity_usd')), None)
+                        if token_data:
+                            liquidity = token_data.get('liquidity_usd', 0)
+                            volume = token_data.get('volume_24h', 0)
+                            
+                            # Safety filters: min $1K liquidity, $100 volume
+                            if liquidity >= 1000 and volume >= 100:
+                                self.log_message(f"✅ Adding {ps['token']} to tracking list (multi-whale BUY consensus)")
+                                self.update_whale_activity_feed(f"✅ Auto-added {ps['token']} to tracking")
+                                self.target_tokens.append(ps['token'])
+                                
+                                # Initialize portfolio tracking for new token
+                                if ps['token'] not in self.portfolio:
+                                    self.portfolio[ps['token']] = {
+                                        'holdings': 0,
+                                        'avg_price': 0,
+                                        'total_invested': 0
+                                    }
+                                
+                                # Update GUI dropdowns with new token
+                                self.root.after(0, self._update_token_dropdowns)
+                            else:
+                                self.log_message(f"⚠️ Skipping {ps['token']} - low liquidity (${liquidity:,.0f}) or volume (${volume:,.0f})")
+            
+            # Also add individual whale BUY signals for high-confidence whales
+            for sig in signals:
+                if sig['action'] == 'BUY' and sig['confidence'] >= 0.75:
+                    token = sig['token']
+                    if token not in self.target_tokens:
+                        liquidity = sig.get('liquidity_usd', 0)
+                        volume = sig.get('volume_24h', 0)
+                        
+                        if liquidity >= 1000 and volume >= 100:
+                            self.log_message(f"✅ Adding {token} to tracking list ({sig['whale_name']} BUY, {sig['confidence']:.0%} confidence)")
+                            self.target_tokens.append(token)
+                            
+                            if token not in self.portfolio:
+                                self.portfolio[token] = {
+                                    'holdings': 0,
+                                    'avg_price': 0,
+                                    'total_invested': 0
+                                }
+                            
+                            self.root.after(0, self._update_token_dropdowns)
+            
+        except Exception as e:
+            self.log_message(f"❌ Whale discovery scan error: {e}")
+            import traceback
+            self.log_message(traceback.format_exc())
+    
     async def scan_tokens(self):
         """Scan and analyze target tokens + SOL for wallet calculations"""
         self.log_message("📊 Starting comprehensive token scan...")
+        
+        # 🐋 STEP 1: WHALE DISCOVERY SCAN (runs once per cycle)
+        # This discovers ALL tokens that whales are trading, not just our tracked tokens
+        await self.scan_whale_activity_all_tokens()
         
         # Always fetch SOL price first for wallet USD calculations
         try:
