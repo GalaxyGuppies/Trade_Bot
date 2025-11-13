@@ -1,2 +1,0 @@
-REDDIT_CLIENT_SECRET=your_reddit_client_secret
-POSTGRES_PASSWORD=your_postgres_password
